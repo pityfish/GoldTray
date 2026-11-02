@@ -34,6 +34,8 @@ pub fn run() {
             app.manage(AppState::new(db));
 
             tray::create_tray(app.handle())?;
+            // 恢复悬浮行情条上次位置
+            tray::restore_hud_position(app.handle());
 
             // 启动后台行情轮询（首次请求在循环开始立即执行）
             services::scheduler::spawn(app.handle().clone());
@@ -41,10 +43,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 点击关闭按钮：隐藏窗口，托盘继续运行
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+            match event {
+                // 点击关闭按钮：隐藏窗口，托盘继续运行
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+                // 悬浮行情条拖动时持久化位置（SQLite WAL 高频小写入可接受）
+                tauri::WindowEvent::Moved(position) if window.label() == tray::HUD_WINDOW => {
+                    let app = window.app_handle();
+                    let state = app.state::<AppState>();
+                    let db = state.db.lock().unwrap();
+                    let _ = db.set_setting("hud_pos_x", &position.x.to_string());
+                    let _ = db.set_setting("hud_pos_y", &position.y.to_string());
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

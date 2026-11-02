@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -20,6 +21,21 @@
         "minHeight": 500,
         "resizable": true,
         "center": true
+      },
+      {
+        "label": "hud",
+        "title": "GoldTray 悬浮行情",
+        "width": 200,
+        "height": 48,
+        "x": 0,
+        "y": 0,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {

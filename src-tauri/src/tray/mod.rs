@@ -1,4 +1,4 @@
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
@@ -6,17 +6,27 @@ use crate::services::quote_service::AppState;
 use crate::services::scheduler;
 
 pub const TRAY_ID: &str = "goldtray-tray";
+pub const HUD_WINDOW: &str = "hud";
 
 pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
     let open_item = MenuItem::with_id(app, "open", "打开行情", true, None::<&str>)?;
     let alert_item = MenuItem::with_id(app, "alerts", "预警管理", true, None::<&str>)?;
     let refresh_item = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
+    let hud_item = CheckMenuItem::with_id(app, "hud", "悬浮行情条", true, false, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&open_item, &alert_item, &refresh_item, &sep, &quit_item],
+        &[
+            &open_item,
+            &alert_item,
+            &refresh_item,
+            &hud_item,
+            &sep,
+            &quit_item,
+        ],
     )?;
+    let hud_check = hud_item.clone();
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(
@@ -27,7 +37,7 @@ pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
         .tooltip("GoldTray 正在启动…")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" | "alerts" => show_main_window(app),
             "refresh" => {
                 let app = app.clone();
@@ -35,6 +45,7 @@ pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
                     let _ = scheduler::fetch_and_process(&app).await;
                 });
             }
+            "hud" => toggle_hud(app, &hud_check),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -62,6 +73,42 @@ pub fn show_main_window(app: &AppHandle) {
             let _ = window.set_focus();
         }
     }
+}
+
+/// 切换悬浮行情条显示/隐藏，并同步托盘菜单勾选状态
+pub fn toggle_hud(app: &AppHandle, hud_check: &CheckMenuItem<tauri::Wry>) {
+    if let Some(hud) = app.get_webview_window(HUD_WINDOW) {
+        let visible = hud.is_visible().unwrap_or(false);
+        if visible {
+            let _ = hud.hide();
+            let _ = hud_check.set_checked(false);
+        } else {
+            let _ = hud.show();
+            let _ = hud_check.set_checked(true);
+        }
+    }
+}
+
+/// 启动时恢复悬浮行情条上次保存的屏幕位置
+pub fn restore_hud_position(app: &AppHandle) {
+    let Some(hud) = app.get_webview_window(HUD_WINDOW) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    let (x, y) = {
+        let db = state.db.lock().unwrap();
+        match (
+            db.get_setting("hud_pos_x").ok().flatten(),
+            db.get_setting("hud_pos_y").ok().flatten(),
+        ) {
+            (Some(x), Some(y)) => match (x.trim().parse::<i32>(), y.trim().parse::<i32>()) {
+                (Ok(x), Ok(y)) => (x, y),
+                _ => return,
+            },
+            _ => return,
+        }
+    };
+    let _ = hud.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 /// 行情变化时同步更新托盘。
