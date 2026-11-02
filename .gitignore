@@ -1,0 +1,29 @@
+# ========== 前端 ==========
+node_modules/
+dist/
+
+# ========== Rust / Tauri ==========
+src-tauri/target/
+src-tauri/gen/
+# V1 仅支持桌面端，忽略 tauri icon 生成的移动端图标
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# ========== 构建辅助（图标源文件）==========
+build-src/
+
+# ========== IDE / 系统 ==========
+.DS_Store
+*.iml
+.idea/
+.vscode/
+
+# ========== 本地运行产物 ==========
+# 开发运行时生成的 SQLite 数据库
+*.db
+*.db-wal
+*.db-shm
+
+# ========== 日志 ==========
+*.log
+logs/

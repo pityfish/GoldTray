@@ -1,0 +1,61 @@
+mod commands;
+mod models;
+mod providers;
+mod services;
+mod storage;
+mod tray;
+
+use std::path::PathBuf;
+
+use services::quote_service::AppState;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 已有实例运行时：唤起主窗口
+            tray::show_main_window(app);
+        }))
+        .setup(|app| {
+            let data_dir: PathBuf = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
+            std::fs::create_dir_all(&data_dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
+            let db = storage::db::Db::open(&data_dir.join("goldtray.db"))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            app.manage(AppState::new(db));
+
+            tray::create_tray(app.handle())?;
+
+            // 启动后台行情轮询（首次请求在循环开始立即执行）
+            services::scheduler::spawn(app.handle().clone());
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 点击关闭按钮：隐藏窗口，托盘继续运行
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_latest_quote,
+            commands::refresh_quote,
+            commands::list_alerts,
+            commands::create_alert,
+            commands::update_alert,
+            commands::delete_alert,
+            commands::set_alert_enabled,
+            commands::list_alert_history,
+            commands::delete_alert_history,
+            commands::clear_alert_history,
+            commands::get_settings,
+            commands::set_setting,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running GoldTray");
+}

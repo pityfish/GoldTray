@@ -1,0 +1,32 @@
+{
+  "name": "goldtray",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-notification": "^2.3.1",
+    "@vicons/ionicons5": "^0.13.0",
+    "naive-ui": "^2.43.2",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.24"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6",
+    "@vitejs/plugin-vue": "^6.0.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@tauri-apps/cli",
+      "esbuild"
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+[package]
+name = "goldtray"
+version = "0.1.0"
+description = "轻量级跨平台黄金行情监控托盘工具"
+authors = ["GoldTray"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "goldtray_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust_decimal = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["sync", "time"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
