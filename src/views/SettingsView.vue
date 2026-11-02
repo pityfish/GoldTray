@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import {
+  NButton,
   NCard,
   NDivider,
   NForm,
@@ -10,6 +11,13 @@ import {
   NSwitch,
   useMessage,
 } from "naive-ui";
+import { getVersion } from "@tauri-apps/api/app";
+import {
+  disable,
+  enable,
+  isEnabled,
+} from "@tauri-apps/plugin-autostart";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettingsStore } from "../stores/settings";
 
 const settingsStore = useSettingsStore();
@@ -17,9 +25,78 @@ const message = useMessage();
 
 const spreadInput = ref<string>("");
 
+// ---------- 开机自启 ----------
+const autostartEnabled = ref(false);
+
+async function onAutostartChange(v: boolean) {
+  try {
+    if (v) {
+      await enable();
+    } else {
+      await disable();
+    }
+    autostartEnabled.value = v;
+    message.success(v ? "已开启开机自启" : "已关闭开机自启");
+  } catch (e) {
+    message.error(`设置开机自启失败：${String(e)}`);
+  }
+}
+
+// ---------- 检查更新 ----------
+const REPO_URL = "https://github.com/pityfish/GoldTray";
+const currentVersion = ref("");
+const checking = ref(false);
+
+/** 语义化版本比较：返回 >0 表示 a 更新 */
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+async function checkUpdate() {
+  checking.value = true;
+  try {
+    const resp = await fetch(`${REPO_URL}/releases/latest`, {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!resp.ok) {
+      throw new Error(`GitHub 返回 ${resp.status}`);
+    }
+    const data = (await resp.json()) as { tag_name?: string };
+    const latest = String(data.tag_name ?? "").replace(/^v/, "");
+    if (!latest) {
+      throw new Error("响应中没有版本号");
+    }
+    if (cmpVersion(latest, currentVersion.value) > 0) {
+      message.info(`发现新版本 v${latest}，正在打开下载页面`);
+      await openUrl(`${REPO_URL}/releases/latest`);
+    } else {
+      message.success(`已是最新版本 v${currentVersion.value}`);
+    }
+  } catch {
+    message.warning(
+      "检查更新失败（可能是网络原因，或尚未发布过任何版本）。可手动访问 GitHub Releases 页面查看。",
+    );
+  } finally {
+    checking.value = false;
+  }
+}
+
 onMounted(async () => {
   await settingsStore.init();
   spreadInput.value = settingsStore.settings.estimatedSpread ?? "";
+  currentVersion.value = await getVersion();
+  try {
+    autostartEnabled.value = await isEnabled();
+  } catch {
+    // dev 模式或系统限制下可能读取失败，保持默认关闭
+    autostartEnabled.value = false;
+  }
 });
 
 const intervalOptions = [
@@ -73,7 +150,18 @@ async function onSpreadBlur() {
 
 <template>
   <div class="settings-view">
-    <n-card size="small" title="行情设置">
+    <n-card size="small" title="通用设置">
+      <n-form label-placement="left" label-width="110" size="small">
+        <n-form-item label="开机自启">
+          <n-switch
+            :value="autostartEnabled"
+            @update:value="onAutostartChange"
+          />
+        </n-form-item>
+      </n-form>
+    </n-card>
+
+    <n-card size="small" title="行情设置" style="margin-top: 12px">
       <n-form label-placement="left" label-width="110" size="small">
         <n-form-item label="刷新频率">
           <n-select
@@ -126,14 +214,25 @@ async function onSpreadBlur() {
       </div>
     </n-card>
 
-    <n-divider />
-    <div class="about">
-      <div>GoldTray v0.1.0</div>
-      <div class="about-sub">
+    <n-card size="small" title="关于" style="margin-top: 12px">
+      <div class="about-row">
+        <span>GoldTray v{{ currentVersion || "…" }}</span>
+        <n-button
+          size="tiny"
+          secondary
+          :loading="checking"
+          @click="checkUpdate"
+        >
+          检查更新
+        </n-button>
+      </div>
+      <div class="card-tip" style="margin-top: 8px">
         数据来源：汇率速递（第三方参考行情，非银行官方实时成交价）。
         本应用仅提供行情展示与提醒，不构成投资建议，不对盈利作出保证。
       </div>
-    </div>
+    </n-card>
+
+    <n-divider />
   </div>
 </template>
 
@@ -146,13 +245,10 @@ async function onSpreadBlur() {
   color: #999;
   line-height: 1.6;
 }
-.about {
-  text-align: center;
-  color: #999;
-  font-size: 12px;
-}
-.about-sub {
-  margin-top: 6px;
-  line-height: 1.6;
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
 }
 </style>

@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "GoldTray 主窗口默认权限",
   "windows": ["main"],
-  "permissions": ["core:default", "notification:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "autostart:default",
+    "opener:default",
+    "opener:allow-open-url"
+  ]
 }

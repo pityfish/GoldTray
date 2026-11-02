@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-autostart": "^2.7.0",
     "@tauri-apps/plugin-notification": "^2.3.1",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "@vicons/ionicons5": "^0.13.0",
     "naive-ui": "^2.43.2",
     "pinia": "^3.0.4",
