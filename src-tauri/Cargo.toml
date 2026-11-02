@@ -1,6 +1,6 @@
 [package]
 name = "goldtray"
-version = "0.1.0"
+version = "0.1.1"
 description = "轻量级跨平台黄金行情监控托盘工具"
 authors = ["GoldTray"]
 edition = "2021"
