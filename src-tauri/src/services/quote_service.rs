@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+use tauri::menu::CheckMenuItem;
+use tauri::Wry;
 
 use crate::models::GoldQuote;
 use crate::providers::huilvsudi::HuilvsudiCmbProvider;
@@ -13,6 +16,10 @@ pub struct AppState {
     pub provider: HuilvsudiCmbProvider,
     /// 行情请求互斥闸门：同一时刻只允许一个请求进行
     pub fetch_gate: tokio::sync::Mutex<()>,
+    /// 托盘菜单「悬浮行情条」勾选项（供任意入口同步勾选状态）
+    pub hud_check: OnceLock<CheckMenuItem<Wry>>,
+    /// 托盘菜单「菜单栏价格文字」勾选项
+    pub title_check: OnceLock<CheckMenuItem<Wry>>,
 }
 
 impl AppState {
@@ -23,6 +30,8 @@ impl AppState {
             last_error: Mutex::new(None),
             provider: HuilvsudiCmbProvider::new(),
             fetch_gate: tokio::sync::Mutex::new(()),
+            hud_check: OnceLock::new(),
+            title_check: OnceLock::new(),
         }
     }
 

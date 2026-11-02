@@ -1,12 +1,53 @@
 use std::collections::HashMap;
 
 use rust_decimal::Decimal;
-use tauri::State;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::models::{AlertInput, AlertRule, GoldQuote};
 use crate::services::alert_engine::{self, EngineSettings};
 use crate::services::quote_service::AppState;
 use crate::services::scheduler;
+use crate::tray;
+
+/// 显示项状态（悬浮行情条 / 菜单栏价格文字）
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayOptions {
+    pub hud_enabled: bool,
+    pub tray_title_enabled: bool,
+}
+
+#[tauri::command]
+pub fn get_display_options(state: State<'_, AppState>) -> Result<DisplayOptions, String> {
+    let db = state.db.lock().unwrap();
+    Ok(DisplayOptions {
+        hud_enabled: tray::read_display_setting(&db, tray::SETTING_HUD_ENABLED, false),
+        tray_title_enabled: tray::read_display_setting(&db, tray::SETTING_TRAY_TITLE, true),
+    })
+}
+
+/// 设置显示项：持久化 → 同步窗口/托盘 → 广播给前端刷新
+#[tauri::command]
+pub fn set_display_option(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let key = match kind.as_str() {
+        "hud" => tray::SETTING_HUD_ENABLED,
+        "trayTitle" => tray::SETTING_TRAY_TITLE,
+        _ => return Err(format!("未知的显示项：{kind}")),
+    };
+    {
+        let db = state.db.lock().unwrap();
+        db.set_setting(key, if enabled { "true" } else { "false" })?;
+    }
+    tray::apply_display(&app, &kind, enabled);
+    let _ = app.emit("display-options-changed", kind);
+    Ok(())
+}
 
 /// 最近一次有效行情（可能为空）
 #[tauri::command]

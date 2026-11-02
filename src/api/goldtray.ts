@@ -55,6 +55,25 @@ export function clearAlertHistory(): Promise<void> {
   return invoke("clear_alert_history");
 }
 
+/** 显示项状态（悬浮行情条 / 菜单栏价格文字） */
+export interface DisplayOptions {
+  hudEnabled: boolean;
+  trayTitleEnabled: boolean;
+}
+
+/** 读取显示项开关状态 */
+export function getDisplayOptions(): Promise<DisplayOptions> {
+  return invoke("get_display_options");
+}
+
+/** 设置显示项：kind = "hud" | "trayTitle" */
+export function setDisplayOption(
+  kind: "hud" | "trayTitle",
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_display_option", { kind, enabled });
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   const pairs: Record<string, string | null> = await invoke("get_settings", {
     keys: Object.values(SETTING_KEYS),

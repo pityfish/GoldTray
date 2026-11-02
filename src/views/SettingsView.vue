@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import {
   NButton,
   NCard,
@@ -18,12 +19,36 @@ import {
   isEnabled,
 } from "@tauri-apps/plugin-autostart";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { DisplayOptions } from "../api/goldtray";
+import * as api from "../api/goldtray";
 import { useSettingsStore } from "../stores/settings";
 
 const settingsStore = useSettingsStore();
 const message = useMessage();
 
 const spreadInput = ref<string>("");
+
+// ---------- 显示项（悬浮行情条 / 菜单栏价格文字） ----------
+const displayOptions = ref<DisplayOptions>({
+  hudEnabled: false,
+  trayTitleEnabled: true,
+});
+
+async function reloadDisplayOptions() {
+  displayOptions.value = await api.getDisplayOptions();
+}
+
+async function onDisplayChange(
+  kind: "hud" | "trayTitle",
+  value: boolean,
+) {
+  try {
+    await api.setDisplayOption(kind, value);
+    await reloadDisplayOptions();
+  } catch (e) {
+    message.error(`设置显示项失败：${String(e)}`);
+  }
+}
 
 // ---------- 开机自启 ----------
 const autostartEnabled = ref(false);
@@ -97,6 +122,11 @@ onMounted(async () => {
     // dev 模式或系统限制下可能读取失败，保持默认关闭
     autostartEnabled.value = false;
   }
+  await reloadDisplayOptions();
+  // 托盘菜单勾选变更时同步刷新（后端广播）
+  await listen("display-options-changed", () => {
+    void reloadDisplayOptions();
+  });
 });
 
 const intervalOptions = [
@@ -159,6 +189,28 @@ async function onSpreadBlur() {
           />
         </n-form-item>
       </n-form>
+    </n-card>
+
+    <n-card size="small" title="显示设置" style="margin-top: 12px">
+      <n-form label-placement="left" label-width="110" size="small">
+        <n-form-item label="悬浮行情条">
+          <n-switch
+            :value="displayOptions.hudEnabled"
+            @update:value="(v: boolean) => onDisplayChange('hud', v)"
+          />
+        </n-form-item>
+        <n-form-item label="菜单栏价格文字">
+          <n-switch
+            :value="displayOptions.trayTitleEnabled"
+            @update:value="(v: boolean) => onDisplayChange('trayTitle', v)"
+          />
+        </n-form-item>
+      </n-form>
+      <div class="card-tip">
+        悬浮行情条：桌面置顶小条持续显示金价，可拖动（Windows 上推荐开启）。
+        菜单栏价格文字：macOS 菜单栏图标旁显示「Au ¥价格」（仅 macOS 生效）。
+        两项均与托盘右键菜单的勾选状态联动。
+      </div>
     </n-card>
 
     <n-card size="small" title="行情设置" style="margin-top: 12px">

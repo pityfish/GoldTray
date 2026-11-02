@@ -34,8 +34,8 @@ pub fn run() {
             app.manage(AppState::new(db));
 
             tray::create_tray(app.handle())?;
-            // 恢复悬浮行情条上次位置
-            tray::restore_hud_position(app.handle());
+            // 按持久化配置恢复显示项（悬浮条位置 + 显示状态）
+            tray::startup_display(app.handle());
 
             // 启动后台行情轮询（首次请求在循环开始立即执行）
             services::scheduler::spawn(app.handle().clone());
@@ -73,6 +73,8 @@ pub fn run() {
             commands::clear_alert_history,
             commands::get_settings,
             commands::set_setting,
+            commands::get_display_options,
+            commands::set_display_option,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GoldTray");
