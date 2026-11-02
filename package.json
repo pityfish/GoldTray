@@ -22,11 +22,5 @@
     "@vitejs/plugin-vue": "^6.0.3",
     "typescript": "~5.9.3",
     "vite": "^7.3.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@tauri-apps/cli",
-      "esbuild"
-    ]
   }
 }
