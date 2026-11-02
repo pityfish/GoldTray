@@ -2,7 +2,7 @@
 
 轻量级跨平台黄金行情监控托盘工具。常驻系统菜单栏 / 任务栏，持续展示招商银行黄金账户·活期的第三方参考买入价，并提供多档价格预警提醒与手工预警管理。
 
-> 平台支持：macOS（Apple Silicon / Intel）· Windows 10/11
+> 平台支持：macOS（Apple Silicon）· Windows 10/11（Intel Mac 支持规划于后续版本）
 >
 > 技术栈：Tauri 2 · Vue 3 · TypeScript · Naive UI · Pinia · Rust · SQLite
 
@@ -46,7 +46,6 @@
 | 系统 | 文件 | 说明 |
 |---|---|---|
 | macOS（Apple Silicon） | `GoldTray_aarch64.dmg` | M1/M2/M3/M4 系列 |
-| macOS（Intel） | `GoldTray_x64.dmg` | Intel 芯片 Mac |
 | Windows 10/11 | `GoldTray_x64_Setup.exe` | 64 位 |
 
 **macOS 安装步骤：**
