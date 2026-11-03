@@ -72,6 +72,11 @@ impl Db {
         Ok(db)
     }
 
+    /// 底层连接访问器（供独立 repository 模块使用）
+    pub fn conn(&self) -> &Connection {
+        &self.0
+    }
+
     fn migrate(&self) -> Result<(), String> {
         self.0
             .execute_batch(
@@ -111,6 +116,59 @@ impl Db {
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS gold_history_bars (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    product_code TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    min_price TEXT,
+                    max_price TEXT,
+                    avg_price TEXT,
+                    quality TEXT NOT NULL DEFAULT 'VALID',
+                    fetched_at TEXT NOT NULL,
+                    UNIQUE(source, product_code, period, timestamp)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_gold_history_bars_time
+                ON gold_history_bars(product_code, timestamp);
+
+                CREATE TABLE IF NOT EXISTS stabilization_alerts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    product_code TEXT NOT NULL,
+                    observation_price TEXT NOT NULL,
+                    stable_days INTEGER NOT NULL DEFAULT 2,
+                    low_tolerance TEXT NOT NULL DEFAULT '2.00',
+                    breakout_days INTEGER NOT NULL DEFAULT 3,
+                    breakout_confirm_hours INTEGER NOT NULL DEFAULT 2,
+                    trigger_mode TEXT NOT NULL DEFAULT 'ONCE',
+                    cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+                    notify_stabilizing INTEGER NOT NULL DEFAULT 1,
+                    notify_confirmed INTEGER NOT NULL DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    state TEXT NOT NULL DEFAULT 'WAITING_FOR_DIP',
+                    observation_started_at TEXT,
+                    observation_low TEXT,
+                    last_evaluated_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS stabilization_events (
+                    id TEXT PRIMARY KEY,
+                    alert_id TEXT NOT NULL,
+                    alert_name TEXT NOT NULL,
+                    previous_state TEXT,
+                    current_state TEXT NOT NULL,
+                    reference_price TEXT,
+                    reason TEXT,
+                    event_time TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_stabilization_events_alert
+                ON stabilization_events(alert_id, event_time);
                 "#,
             )
             .map_err(|e| format!("初始化数据库表失败：{e}"))

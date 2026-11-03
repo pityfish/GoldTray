@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import {
   NAlert,
   NButton,
@@ -12,13 +13,37 @@ import {
 import { Refresh } from "@vicons/ionicons5";
 import { useQuoteStore } from "../stores/quote";
 import { useSettingsStore } from "../stores/settings";
+import * as api from "../api/history";
+import type { StabilizationAlert } from "../types/stabilization";
+import HistoryChart from "./HistoryChart.vue";
+import StabilizationCard from "./StabilizationCard.vue";
 
 const quoteStore = useQuoteStore();
 const settingsStore = useSettingsStore();
 const message = useMessage();
 
+/** 启用中的企稳规则（用于图表观察价水平线联动） */
+const stabAlerts = ref<StabilizationAlert[]>([]);
+const observationLines = computed(() =>
+  stabAlerts.value
+    .filter((a) => a.enabled)
+    .map((a) => Number(a.observationPrice))
+    .filter((v) => Number.isFinite(v) && v > 0),
+);
+
+async function reloadStabAlerts() {
+  try {
+    stabAlerts.value = await api.listStabilizationAlerts();
+  } catch {
+    // 企稳规则加载失败不影响行情展示
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([quoteStore.init(), settingsStore.init()]);
+  await Promise.all([quoteStore.init(), settingsStore.init(), reloadStabAlerts()]);
+  await listen("stabilization-changed", () => {
+    void reloadStabAlerts();
+  });
 });
 
 const price = computed(() => {
@@ -118,6 +143,9 @@ async function refresh() {
           </n-tag>
         </div>
       </n-card>
+
+      <HistoryChart :observation-lines="observationLines" />
+      <StabilizationCard />
 
       <n-alert
         v-if="quoteStore.error"

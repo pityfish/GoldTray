@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod historical_quote;
+pub mod stabilization;
+
 /// 内部行情模型。
 /// 价格使用十进制字符串，避免浮点精度问题。
 #[derive(Debug, Clone, Serialize)]

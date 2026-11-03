@@ -11,6 +11,7 @@ import {
   NModal,
   NPopconfirm,
   NRadioGroup,
+  NRadioButton,
   NRadio,
   NSelect,
   NSwitch,
@@ -22,6 +23,10 @@ import {
 import type { AlertInput, PriceAlert } from "../types/gold";
 import { useAlertStore } from "../stores/alerts";
 import { useSettingsStore } from "../stores/settings";
+import StabilizationManager from "./StabilizationManager.vue";
+
+/** 预警类型页签：价格预警 / 智能企稳预警 */
+const alertTab = ref<"price" | "stabilization">("price");
 
 const alertStore = useAlertStore();
 const settingsStore = useSettingsStore();
@@ -161,6 +166,16 @@ const hasEstimatedSell = computed(
 
 <template>
   <div class="alert-manager">
+    <n-radio-group
+      v-model:value="alertTab"
+      size="small"
+      style="display: flex; margin-bottom: 10px"
+    >
+      <n-radio-button value="price">价格预警</n-radio-button>
+      <n-radio-button value="stabilization">智能企稳</n-radio-button>
+    </n-radio-group>
+
+    <template v-if="alertTab === 'price'">
     <div class="toolbar">
       <span class="toolbar-tip">价格穿越触发，连续两次有效行情确认</span>
       <n-button size="small" type="primary" @click="openCreate">新增预警</n-button>
@@ -333,6 +348,9 @@ const hasEstimatedSell = computed(
         </div>
       </template>
     </n-modal>
+    </template>
+
+    <StabilizationManager v-else />
   </div>
 </template>
 

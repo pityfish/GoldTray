@@ -1,7 +1,7 @@
 {
   "name": "goldtray",
   "private": true,
-  "version": "0.1.1",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-notification": "^2.3.1",
     "@tauri-apps/plugin-opener": "^2.7.2",
     "@vicons/ionicons5": "^0.13.0",
+    "echarts": "^6.1.0",
     "naive-ui": "^2.43.2",
     "pinia": "^3.0.4",
     "vue": "^3.5.24"

@@ -39,6 +39,8 @@ pub fn run() {
 
             // 启动后台行情轮询（首次请求在循环开始立即执行）
             services::scheduler::spawn(app.handle().clone());
+            // 历史行情后台刷新（走势图 + 企稳引擎数据源）
+            services::scheduler::spawn_history_refresher(app.handle().clone());
 
             Ok(())
         })
@@ -75,6 +77,15 @@ pub fn run() {
             commands::set_setting,
             commands::get_display_options,
             commands::set_display_option,
+            commands::get_history,
+            commands::list_stabilization_alerts,
+            commands::create_stabilization_alert,
+            commands::update_stabilization_alert,
+            commands::delete_stabilization_alert,
+            commands::set_stabilization_alert_enabled,
+            commands::reset_stabilization_alert,
+            commands::list_stabilization_events,
+            commands::assess_stabilization,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GoldTray");

@@ -6,6 +6,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::models::{AlertTriggeredEvent, GoldQuote};
 use crate::services::alert_engine::{self, EngineSettings};
+use crate::services::history_service;
 use crate::services::quote_service::AppState;
 use crate::tray;
 
@@ -68,35 +69,63 @@ pub async fn fetch_and_process(app: &AppHandle) -> Result<GoldQuote, String> {
     let _ = app.emit("quote-updated", &quote);
     tray::update_tray(app, Some(&quote));
 
-    // 预警评估（引擎内部含行情失效保护）
+    // 预警评估（引擎内部含行情失效保护）；作用域块确保锁在 await 前释放
     let (engine_settings, notify_enabled) = read_engine_settings(&state);
-    let db = state.db.lock().unwrap();
-    match alert_engine::evaluate(&db, &quote, &engine_settings) {
-        Ok(outcome) => {
-            for (record, price, _estimated) in &outcome.triggered {
-                if let Err(e) = db.insert_alert_history(record) {
-                    eprintln!("[goldtray] 保存触发记录失败：{e}");
-                }
-                if notify_enabled {
-                    let (title, body) = alert_engine::notification_body(record, price);
-                    if let Err(e) = app.notification().builder().title(title).body(body).show() {
-                        eprintln!("[goldtray] 发送通知失败：{e}");
+    {
+        let db = state.db.lock().unwrap();
+        match alert_engine::evaluate(&db, &quote, &engine_settings) {
+            Ok(outcome) => {
+                for (record, price, _estimated) in &outcome.triggered {
+                    if let Err(e) = db.insert_alert_history(record) {
+                        eprintln!("[goldtray] 保存触发记录失败：{e}");
                     }
+                    if notify_enabled {
+                        let (title, body) = alert_engine::notification_body(record, price);
+                        if let Err(e) =
+                            app.notification().builder().title(title).body(body).show()
+                        {
+                            eprintln!("[goldtray] 发送通知失败：{e}");
+                        }
+                    }
+                    let _ = app.emit(
+                        "alert-triggered",
+                        AlertTriggeredEvent {
+                            record: record.clone(),
+                            current_price: quote.customer_buy_price.clone(),
+                        },
+                    );
                 }
-                let _ = app.emit(
-                    "alert-triggered",
-                    AlertTriggeredEvent {
-                        record: record.clone(),
-                        current_price: quote.customer_buy_price.clone(),
-                    },
-                );
             }
+            Err(e) => eprintln!("[goldtray] 预警评估失败：{e}"),
         }
-        Err(e) => eprintln!("[goldtray] 预警评估失败：{e}"),
     }
-    drop(db);
+
+    // 智能企稳引擎评估（历史数据缺失时引擎内部自行降级，不影响实时预警）
+    crate::services::stabilization_engine::evaluate_all(app).await;
 
     Ok(quote)
+}
+
+/// 历史行情后台刷新：48H 每 15 分钟、14d 每 30 分钟（企稳引擎数据源）。
+/// 其余长周期由前端请求时按需缓存。
+pub fn spawn_history_refresher(app: AppHandle) {
+    use crate::models::historical_quote::HistoryPeriod;
+    tauri::async_runtime::spawn(async move {
+        let mut tick: u64 = 0;
+        loop {
+            // 立即首次刷新
+            if let Err(e) = history_service::get_history(&app, HistoryPeriod::H48, true).await {
+                eprintln!("[goldtray] 48H 历史刷新失败：{e}");
+            }
+            if tick % 2 == 0 {
+                if let Err(e) = history_service::get_history(&app, HistoryPeriod::D14, true).await {
+                    eprintln!("[goldtray] 14d 历史刷新失败：{e}");
+                }
+            }
+            tick += 1;
+            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+        }
+    });
 }
 
 /// 后台轮询任务：启动后立即拉取，成功后按设定周期轮询，失败时退避重试。
