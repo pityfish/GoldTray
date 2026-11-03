@@ -79,6 +79,9 @@ impl Db {
 
     fn migrate(&self) -> Result<(), String> {
         self.0
+            .pragma_update(None, "foreign_keys", true)
+            .map_err(|e| format!("启用外键检查失败：{e}"))?;
+        self.0
             .execute_batch(
                 r#"
                 CREATE TABLE IF NOT EXISTS price_alerts (
@@ -169,9 +172,24 @@ impl Db {
 
                 CREATE INDEX IF NOT EXISTS idx_stabilization_events_alert
                 ON stabilization_events(alert_id, event_time);
+
+                CREATE TABLE IF NOT EXISTS stabilization_notification_times (
+                    alert_id TEXT NOT NULL REFERENCES stabilization_alerts(id) ON DELETE CASCADE,
+                    state TEXT NOT NULL,
+                    sent_at INTEGER NOT NULL,
+                    PRIMARY KEY (alert_id, state)
+                );
                 "#,
             )
-            .map_err(|e| format!("初始化数据库表失败：{e}"))
+            .map_err(|e| format!("初始化数据库表失败：{e}"))?;
+        self.0
+            .execute(
+                "UPDATE alert_history SET notification_status='UNKNOWN'
+                 WHERE notification_status='PENDING'",
+                [],
+            )
+            .map_err(|e| format!("恢复未完成的通知记录失败：{e}"))?;
+        Ok(())
     }
 
     // ---------- 预警规则 ----------
@@ -319,6 +337,16 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_alert_notification_status(&self, id: &str, status: &str) -> Result<(), String> {
+        self.0
+            .execute(
+                "UPDATE alert_history SET notification_status=?2 WHERE id=?1",
+                params![id, status],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn list_alert_history(&self, limit: i64) -> Result<Vec<AlertTriggerRecord>, String> {
         let mut stmt = self
             .0
@@ -341,14 +369,6 @@ impl Db {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
-    }
-
-    /// 删除单条触发记录（用户手动删除）
-    pub fn delete_alert_history(&self, id: &str) -> Result<(), String> {
-        self.0
-            .execute("DELETE FROM alert_history WHERE id=?1", params![id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
     }
 
     /// 清空全部触发记录
@@ -388,5 +408,35 @@ impl Db {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::Db;
+
+    #[test]
+    fn pending_notification_is_marked_unknown_on_reopen() {
+        let path =
+            std::env::temp_dir().join(format!("goldtray-recovery-{}.db", uuid::Uuid::new_v4()));
+        {
+            let db = Db::open(&path).unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO alert_history
+                 (id, alert_id, alert_name, direction, target_price, triggered_price,
+                  triggered_at, notification_status)
+                 VALUES ('pending', 'rule', 'rule', 'ABOVE', '850', '851', 'now', 'PENDING')",
+                    [],
+                )
+                .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let records = db.list_alert_history(10).unwrap();
+        assert_eq!(records[0].notification_status, "UNKNOWN");
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

@@ -55,6 +55,10 @@ export function listStabilizationEvents(
   return invoke("list_stabilization_events", { alertId: alertId ?? null, limit });
 }
 
+export function clearStabilizationEvents(): Promise<void> {
+  return invoke("clear_stabilization_events");
+}
+
 /** 获取企稳判断依据 */
 export function assessStabilization(
   id: string,

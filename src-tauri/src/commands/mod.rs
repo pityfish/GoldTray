@@ -2,13 +2,17 @@ use std::collections::HashMap;
 
 use rust_decimal::Decimal;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::models::{AlertInput, AlertRule, GoldQuote};
 use crate::services::alert_engine::{self, EngineSettings};
 use crate::services::quote_service::AppState;
 use crate::services::scheduler;
 use crate::tray;
+
+// 说明：所有 command 一律声明为 async —— Tauri 的同步 command 会在主线程执行，
+// 与后台线程的 UI 派发（run_on_main_thread）互等时会造成主线程卡死（UI 冻结）。
+// async command 在 tokio 工作线程运行，主线程只处理事件循环与 UI 回调。
 
 /// 显示项状态（悬浮行情条 / 菜单栏价格文字）
 #[derive(Serialize)]
@@ -19,7 +23,8 @@ pub struct DisplayOptions {
 }
 
 #[tauri::command]
-pub fn get_display_options(state: State<'_, AppState>) -> Result<DisplayOptions, String> {
+pub async fn get_display_options(app: AppHandle) -> Result<DisplayOptions, String> {
+    let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     Ok(DisplayOptions {
         hud_enabled: tray::read_display_setting(&db, tray::SETTING_HUD_ENABLED, false),
@@ -27,47 +32,31 @@ pub fn get_display_options(state: State<'_, AppState>) -> Result<DisplayOptions,
     })
 }
 
-/// 设置显示项：持久化 → 同步窗口/托盘 → 广播给前端刷新
+/// 设置显示项：持久化 → 同步窗口/托盘 → 广播给前端刷新（与托盘菜单共用统一入口）
 #[tauri::command]
-pub fn set_display_option(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    kind: String,
-    enabled: bool,
-) -> Result<(), String> {
-    let key = match kind.as_str() {
-        "hud" => tray::SETTING_HUD_ENABLED,
-        "trayTitle" => tray::SETTING_TRAY_TITLE,
-        _ => return Err(format!("未知的显示项：{kind}")),
-    };
-    {
-        let db = state.db.lock().unwrap();
-        db.set_setting(key, if enabled { "true" } else { "false" })?;
-    }
-    tray::apply_display(&app, &kind, enabled);
-    let _ = app.emit("display-options-changed", kind);
-    Ok(())
+pub async fn set_display_option(app: AppHandle, kind: String, enabled: bool) -> Result<(), String> {
+    tray::apply_display_change(&app, &kind, enabled)
 }
 
 /// 最近一次有效行情（可能为空）
 #[tauri::command]
-pub fn get_latest_quote(state: State<'_, AppState>) -> Option<GoldQuote> {
-    state.latest_quote.lock().unwrap().clone()
+pub async fn get_latest_quote(app: AppHandle) -> Option<GoldQuote> {
+    app.state::<AppState>().latest_quote.lock().unwrap().clone()
 }
 
 /// 立即刷新行情（与后台轮询共用同一请求闸门）
 #[tauri::command]
-pub async fn refresh_quote(app: tauri::AppHandle) -> Result<GoldQuote, String> {
+pub async fn refresh_quote(app: AppHandle) -> Result<GoldQuote, String> {
     scheduler::fetch_and_process(&app).await
 }
 
 #[tauri::command]
-pub fn list_alerts(state: State<'_, AppState>) -> Result<Vec<AlertRule>, String> {
-    state.db.lock().unwrap().list_alerts()
+pub async fn list_alerts(app: AppHandle) -> Result<Vec<AlertRule>, String> {
+    app.state::<AppState>().db.lock().unwrap().list_alerts()
 }
 
 #[tauri::command]
-pub fn create_alert(state: State<'_, AppState>, input: AlertInput) -> Result<AlertRule, String> {
+pub async fn create_alert(app: AppHandle, input: AlertInput) -> Result<AlertRule, String> {
     validate_input(&input)?;
     let now = chrono::Local::now().to_rfc3339();
     let rule = AlertRule {
@@ -88,6 +77,7 @@ pub fn create_alert(state: State<'_, AppState>, input: AlertInput) -> Result<Ale
         updated_at: now,
     };
 
+    let state = app.state::<AppState>();
     // 若创建时价格已处于目标区间，默认不立即触发，等待离开后重新进入
     let db = state.db.lock().unwrap();
     if let Some(latest) = state.latest_quote.lock().unwrap().clone() {
@@ -112,37 +102,31 @@ pub fn create_alert(state: State<'_, AppState>, input: AlertInput) -> Result<Ale
 }
 
 #[tauri::command]
-pub fn update_alert(
-    state: State<'_, AppState>,
+pub async fn update_alert(
+    app: AppHandle,
     id: String,
     input: AlertInput,
 ) -> Result<AlertRule, String> {
     validate_input(&input)?;
+    let state = app.state::<AppState>();
     {
         let db = state.db.lock().unwrap();
         db.update_alert(&id, &input)?;
     }
     // 编辑后重置了触发状态，按当前行情重新校准 armed
     recalibrate(&state, &id)?;
-    state
-        .db
-        .lock()
-        .unwrap()
-        .get_alert(&id)?
-        .ok_or_else(|| "规则不存在".to_string())
+    let rule = state.db.lock().unwrap().get_alert(&id)?;
+    rule.ok_or_else(|| "规则不存在".to_string())
 }
 
 #[tauri::command]
-pub fn delete_alert(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.db.lock().unwrap().delete_alert(&id)
+pub async fn delete_alert(app: AppHandle, id: String) -> Result<(), String> {
+    app.state::<AppState>().db.lock().unwrap().delete_alert(&id)
 }
 
 #[tauri::command]
-pub fn set_alert_enabled(
-    state: State<'_, AppState>,
-    id: String,
-    enabled: bool,
-) -> Result<(), String> {
+pub async fn set_alert_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
     {
         let db = state.db.lock().unwrap();
         db.set_alert_enabled(&id, enabled)?;
@@ -154,35 +138,34 @@ pub fn set_alert_enabled(
 }
 
 #[tauri::command]
-pub fn list_alert_history(
-    state: State<'_, AppState>,
+pub async fn list_alert_history(
+    app: AppHandle,
     limit: Option<i64>,
 ) -> Result<Vec<crate::models::AlertTriggerRecord>, String> {
-    state
+    app.state::<AppState>()
         .db
         .lock()
         .unwrap()
         .list_alert_history(limit.unwrap_or(100).clamp(1, 500))
 }
 
-/// 删除单条触发记录
-#[tauri::command]
-pub fn delete_alert_history(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.db.lock().unwrap().delete_alert_history(&id)
-}
-
 /// 清空全部触发记录
 #[tauri::command]
-pub fn clear_alert_history(state: State<'_, AppState>) -> Result<(), String> {
-    state.db.lock().unwrap().clear_alert_history()
+pub async fn clear_alert_history(app: AppHandle) -> Result<(), String> {
+    app.state::<AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .clear_alert_history()
 }
 
 #[tauri::command]
-pub fn get_settings(
-    state: State<'_, AppState>,
+pub async fn get_settings(
+    app: AppHandle,
     keys: Vec<String>,
 ) -> Result<HashMap<String, Option<String>>, String> {
-    Ok(state
+    Ok(app
+        .state::<AppState>()
         .db
         .lock()
         .unwrap()
@@ -192,8 +175,12 @@ pub fn get_settings(
 }
 
 #[tauri::command]
-pub fn set_setting(state: State<'_, AppState>, app: AppHandle, key: String, value: String) -> Result<(), String> {
-    state.db.lock().unwrap().set_setting(&key, &value)?;
+pub async fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    app.state::<AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .set_setting(&key, &value)?;
     // 广播设置变更（如悬浮条透明度需跨窗口实时生效）
     let _ = app.emit("settings-changed", key);
     Ok(())
@@ -218,7 +205,7 @@ fn validate_input(input: &AlertInput) -> Result<(), String> {
 }
 
 /// 按最新行情重新校准规则的 armed 状态
-fn recalibrate(state: &State<'_, AppState>, id: &str) -> Result<(), String> {
+fn recalibrate(state: &tauri::State<'_, AppState>, id: &str) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     let Some(rule) = db.get_alert(id)? else {
         return Ok(());
@@ -255,7 +242,7 @@ fn recalibrate(state: &State<'_, AppState>, id: &str) -> Result<(), String> {
 /// 获取走势图数据（Rust 侧缓存优先，网络异常降级旧缓存）
 #[tauri::command]
 pub async fn get_history(
-    app: tauri::AppHandle,
+    app: AppHandle,
     period: String,
     force: Option<bool>,
 ) -> Result<crate::models::historical_quote::HistoryPayload, String> {
@@ -313,19 +300,21 @@ fn validate_stabilization_input(
 }
 
 #[tauri::command]
-pub fn list_stabilization_alerts(
-    state: State<'_, AppState>,
+pub async fn list_stabilization_alerts(
+    app: AppHandle,
 ) -> Result<Vec<crate::models::stabilization::StabilizationRule>, String> {
-    crate::storage::stabilization_repository::StabilizationRepo(state.db.lock().unwrap().conn())
-        .list(false)
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    crate::storage::stabilization_repository::StabilizationRepo(db.conn()).list(false)
 }
 
 #[tauri::command]
-pub fn create_stabilization_alert(
-    state: State<'_, AppState>,
+pub async fn create_stabilization_alert(
+    app: AppHandle,
     input: crate::models::stabilization::StabilizationInput,
 ) -> Result<crate::models::stabilization::StabilizationRule, String> {
     use crate::models::stabilization::{StabilizationRule, StabilizationState};
+    use crate::storage::stabilization_repository::StabilizationRepo;
     validate_stabilization_input(&input)?;
     let now = chrono::Local::now().to_rfc3339();
     let rule = StabilizationRule {
@@ -349,14 +338,15 @@ pub fn create_stabilization_alert(
         created_at: now.clone(),
         updated_at: now,
     };
-    crate::storage::stabilization_repository::StabilizationRepo(state.db.lock().unwrap().conn())
-        .insert(&rule)?;
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    StabilizationRepo(db.conn()).insert(&rule)?;
     Ok(rule)
 }
 
 #[tauri::command]
-pub fn update_stabilization_alert(
-    state: State<'_, AppState>,
+pub async fn update_stabilization_alert(
+    app: AppHandle,
     id: String,
     input: crate::models::stabilization::StabilizationInput,
 ) -> Result<crate::models::stabilization::StabilizationRule, String> {
@@ -364,6 +354,7 @@ pub fn update_stabilization_alert(
     use crate::storage::stabilization_repository::StabilizationRepo;
     validate_stabilization_input(&input)?;
     let now = chrono::Local::now().to_rfc3339();
+    let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     let repo = StabilizationRepo(db.conn());
     let old = repo.get(&id)?.ok_or_else(|| "规则不存在".to_string())?;
@@ -383,26 +374,29 @@ pub fn update_stabilization_alert(
 }
 
 #[tauri::command]
-pub fn delete_stabilization_alert(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    crate::storage::stabilization_repository::StabilizationRepo(state.db.lock().unwrap().conn())
-        .delete(&id)
+pub async fn delete_stabilization_alert(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    crate::storage::stabilization_repository::StabilizationRepo(db.conn()).delete(&id)
 }
 
 #[tauri::command]
-pub fn set_stabilization_alert_enabled(
-    state: State<'_, AppState>,
+pub async fn set_stabilization_alert_enabled(
+    app: AppHandle,
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    crate::storage::stabilization_repository::StabilizationRepo(state.db.lock().unwrap().conn())
-        .set_enabled(&id, enabled)
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    crate::storage::stabilization_repository::StabilizationRepo(db.conn()).set_enabled(&id, enabled)
 }
 
 #[tauri::command]
-pub fn reset_stabilization_alert(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn reset_stabilization_alert(app: AppHandle, id: String) -> Result<(), String> {
     use crate::models::stabilization::{StabilizationEvent, StabilizationState};
     use crate::storage::stabilization_repository::StabilizationRepo;
     let now = chrono::Local::now().to_rfc3339();
+    let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     let repo = StabilizationRepo(db.conn());
     let old = repo.get(&id)?.ok_or_else(|| "规则不存在".to_string())?;
@@ -421,23 +415,33 @@ pub fn reset_stabilization_alert(state: State<'_, AppState>, id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn list_stabilization_events(
-    state: State<'_, AppState>,
+pub async fn list_stabilization_events(
+    app: AppHandle,
     alert_id: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<crate::models::stabilization::StabilizationEvent>, String> {
-    crate::storage::stabilization_repository::StabilizationRepo(state.db.lock().unwrap().conn())
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    crate::storage::stabilization_repository::StabilizationRepo(db.conn())
         .list_events(alert_id.as_deref(), limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub async fn clear_stabilization_events(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    crate::storage::stabilization_repository::StabilizationRepo(db.conn()).clear_events()
 }
 
 /// 获取指定规则的企稳判断依据（供「查看判断依据」弹窗）
 #[tauri::command]
-pub fn assess_stabilization(
-    state: State<'_, AppState>,
+pub async fn assess_stabilization(
+    app: AppHandle,
     id: String,
 ) -> Result<crate::models::stabilization::StabilizationAssessment, String> {
     use crate::models::historical_quote::HistoryPeriod;
     use crate::storage::{history_repository, stabilization_repository::StabilizationRepo};
+    let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     let repo = StabilizationRepo(db.conn());
     let rule = repo.get(&id)?.ok_or_else(|| "规则不存在".to_string())?;

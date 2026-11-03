@@ -45,11 +45,6 @@ export function listAlertHistory(limit = 100): Promise<AlertTriggerRecord[]> {
   return invoke("list_alert_history", { limit });
 }
 
-/** 删除单条触发记录 */
-export function deleteAlertHistory(id: string): Promise<void> {
-  return invoke("delete_alert_history", { id });
-}
-
 /** 清空全部触发记录 */
 export function clearAlertHistory(): Promise<void> {
   return invoke("clear_alert_history");

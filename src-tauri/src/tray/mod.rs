@@ -38,8 +38,14 @@ pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
     let refresh_item = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
     let hud_item =
         CheckMenuItem::with_id(app, "hud", "悬浮行情条", true, hud_enabled, None::<&str>)?;
-    let title_item =
-        CheckMenuItem::with_id(app, "title", "菜单栏显示", true, title_enabled, None::<&str>)?;
+    let title_item = CheckMenuItem::with_id(
+        app,
+        "title",
+        "菜单栏显示",
+        true,
+        title_enabled,
+        None::<&str>,
+    )?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -66,29 +72,42 @@ pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
         .tooltip("GoldTray 正在启动…")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "open" | "alerts" => show_main_window(app),
-            "refresh" => {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = scheduler::fetch_and_process(&app).await;
-                });
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "open" | "alerts" => show_main_window(app),
+                "refresh" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = scheduler::fetch_and_process(&app).await;
+                    });
+                }
+                "hud" | "title" => {
+                    // 注意：set_checked / set_title 内部会向主线程派发 UI 操作，
+                    // 而本回调正在主线程执行——同步调用会死锁（UI 冻结）。
+                    // 因此这里只取反状态，实际切换 spawn 到异步线程执行。
+                    let app = app.clone();
+                    let kind = if event.id().as_ref() == "hud" {
+                        "hud"
+                    } else {
+                        "trayTitle"
+                    };
+                    tauri::async_runtime::spawn(async move {
+                        let enabled = {
+                            let state = app.state::<AppState>();
+                            let db = state.db.lock().unwrap();
+                            match kind {
+                                "hud" => !read_display_setting(&db, SETTING_HUD_ENABLED, false),
+                                _ => !read_display_setting(&db, SETTING_TRAY_TITLE, true),
+                            }
+                        };
+                        if let Err(e) = apply_display_change(&app, kind, enabled) {
+                            eprintln!("[goldtray] 切换显示项失败：{e}");
+                        }
+                    });
+                }
+                "quit" => app.exit(0),
+                _ => {}
             }
-            "hud" | "title" => {
-                // 托盘勾选切换：取反当前持久化状态
-                let enabled = {
-                    let state = app.state::<AppState>();
-                    let db = state.db.lock().unwrap();
-                    match event.id().as_ref() {
-                        "hud" => !read_display_setting(&db, SETTING_HUD_ENABLED, false),
-                        _ => !read_display_setting(&db, SETTING_TRAY_TITLE, true),
-                    }
-                };
-                let kind = if event.id().as_ref() == "hud" { "hud" } else { "trayTitle" };
-                apply_display(app, kind, enabled);
-            }
-            "quit" => app.exit(0),
-            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             // 左键单击：打开或聚焦主窗口（macOS 菜单栏点击习惯）
@@ -116,15 +135,34 @@ pub fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// 应用显示项变更（统一入口）：持久化 → 同步窗口/托盘 → 广播前端。
+/// 设置页命令与托盘菜单勾选均走此函数，保证行为一致。
+/// kind: "hud" | "trayTitle"
+pub fn apply_display_change(app: &AppHandle, kind: &str, enabled: bool) -> Result<(), String> {
+    use tauri::Emitter;
+    let key = match kind {
+        "hud" => SETTING_HUD_ENABLED,
+        "trayTitle" => SETTING_TRAY_TITLE,
+        _ => return Err(format!("未知的显示项：{kind}")),
+    };
+    {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.set_setting(key, if enabled { "true" } else { "false" })?;
+    }
+    apply_display(app, kind, enabled);
+    let _ = app.emit("display-options-changed", kind);
+    Ok(())
+}
+
 /// 应用显示项变更：同步窗口显隐 / 托盘标题 / 菜单勾选状态。
 /// kind: "hud" | "trayTitle"
+/// muda 的 set_checked 属于 UI 写操作，统一经 run_on_main_thread 异步派发。
 pub fn apply_display(app: &AppHandle, kind: &str, enabled: bool) {
     let state = app.state::<AppState>();
     match kind {
         "hud" => {
-            if let Some(check) = state.hud_check.get() {
-                let _ = check.set_checked(enabled);
-            }
+            let check = state.hud_check.get().cloned();
             if let Some(hud) = app.get_webview_window(HUD_WINDOW) {
                 if enabled {
                     let _ = hud.show();
@@ -132,12 +170,20 @@ pub fn apply_display(app: &AppHandle, kind: &str, enabled: bool) {
                     let _ = hud.hide();
                 }
             }
+            let _ = app.run_on_main_thread(move || {
+                if let Some(check) = check {
+                    let _ = check.set_checked(enabled);
+                }
+            });
         }
         "trayTitle" => {
-            if let Some(check) = state.title_check.get() {
-                let _ = check.set_checked(enabled);
-            }
-            // 立即按新状态刷新托盘标题（取最近一次有效行情）
+            let check = state.title_check.get().cloned();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(check) = check {
+                    let _ = check.set_checked(enabled);
+                }
+            });
+            // 立即按新状态刷新托盘标题（取最近一次有效行情；内部自派发 UI 写）
             let latest = state.latest_quote.lock().unwrap().clone();
             update_tray(app, latest.as_ref());
         }
@@ -185,10 +231,10 @@ pub fn restore_hud_position(app: &AppHandle) {
 /// 行情变化时同步更新托盘。
 /// macOS：通过原生接口设置菜单栏文字标题；
 /// Windows：set_title 不生效，依赖 tooltip 展示价格。
+/// 注意：muda 的 UI 写操作（set_title/tooltip）不能在非主线程同步调用，
+/// 统一通过 run_on_main_thread 异步派发，避免阻塞/死锁。
 pub fn update_tray(app: &AppHandle, quote: Option<&crate::models::GoldQuote>) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return;
-    };
+    // ---- 在当前线程完成所有计算，不持有任何锁调用 UI API ----
 
     // 「菜单栏价格文字」关闭时：macOS 不显示标题（Windows 本就不显示），tooltip 保留
     let title_enabled = {
@@ -196,92 +242,100 @@ pub fn update_tray(app: &AppHandle, quote: Option<&crate::models::GoldQuote>) {
         let db = state.db.lock().unwrap();
         read_display_setting(&db, SETTING_TRAY_TITLE, true)
     };
-    let apply_title = |title: Option<String>| {
-        let _ = if title_enabled {
-            tray.set_title(title.as_deref())
-        } else {
-            tray.set_title::<&str>(None)
-        };
-    };
 
-    let Some(quote) = quote else {
+    let title: Option<String>;
+    let tooltip: String;
+
+    if let Some(quote) = quote {
+        let price = format_price(&quote.customer_buy_price);
+        let change_text = quote
+            .raw_change
+            .as_deref()
+            .and_then(|c| c.trim().parse::<f64>().ok())
+            .filter(|c| *c != 0.0 && c.is_finite())
+            .map(|c| {
+                if c > 0.0 {
+                    format!(" ↑{c:.2}")
+                } else {
+                    format!(" ↓{:.2}", c.abs())
+                }
+            })
+            .unwrap_or_default();
+
+        let mut t = format!("Au ¥{price}{change_text}");
+
+        // 行情过期标记 + 估算卖出价（设置过价差时显示）
+        let (staleness, sell_line) = {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().unwrap();
+            let staleness = db
+                .get_setting("staleness_threshold_secs")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .unwrap_or(300);
+            // 估算卖出价 = 买入参考价 − 价差
+            let sell_line = db
+                .get_setting("estimated_spread")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<rust_decimal::Decimal>().ok())
+                .and_then(|spread| quote.estimated_sell_price(spread))
+                .map(|sell| format!("\n估算卖出价：¥{sell:.2} 元/克"))
+                .unwrap_or_default();
+            (staleness, sell_line)
+        };
+        if let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&quote.fetched_at) {
+            let age = chrono::Utc::now().signed_duration_since(fetched.with_timezone(&chrono::Utc));
+            if age.num_seconds() > staleness {
+                t.push_str(" · 已过期");
+            }
+        }
+
+        let change_line = if change_text.is_empty() {
+            "持平".to_string()
+        } else {
+            change_text.trim_start().to_string()
+        };
+        tooltip = format!(
+            "{} {}\n参考买入价：¥{} 元/克（较昨日{}）{}\n获取时间：{}",
+            quote.bank_name,
+            quote.product_name,
+            price,
+            change_line,
+            sell_line,
+            quote.fetched_at.get(11..19).unwrap_or(&quote.fetched_at)
+        );
+        title = Some(t);
+    } else {
         // 获取失败：保留最后一次有效报价并标记异常
         let state = app.state::<AppState>();
         let last = state.latest_quote.lock().unwrap().clone();
-        match last {
-            Some(last) => {
-                apply_title(Some(format!("Au ¥{} ⚠", format_price(&last.customer_buy_price))));
-                let _ = tray.set_tooltip(Some("行情获取失败，显示的为最近一次有效报价"));
-            }
-            None => {
-                apply_title(Some("Au --.-- ⚠".to_string()));
-                let _ = tray.set_tooltip(Some("暂无有效行情，等待重试…"));
-            }
-        }
-        return;
-    };
-
-    let price = format_price(&quote.customer_buy_price);
-    let change_text = quote
-        .raw_change
-        .as_deref()
-        .and_then(|c| c.trim().parse::<f64>().ok())
-        .filter(|c| *c != 0.0 && c.is_finite())
-        .map(|c| {
-            if c > 0.0 {
-                format!(" ↑{c:.2}")
-            } else {
-                format!(" ↓{:.2}", c.abs())
-            }
-        })
-        .unwrap_or_default();
-
-    let mut title = format!("Au ¥{price}{change_text}");
-
-    // 行情过期标记 + 估算卖出价（设置过价差时显示）
-    let (staleness, estimated_sell_line) = {
-        let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        let staleness = db
-            .get_setting("staleness_threshold_secs")
-            .ok()
-            .flatten()
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .unwrap_or(300);
-        // 估算卖出价 = 买入参考价 − 价差
-        let sell_line = db
-            .get_setting("estimated_spread")
-            .ok()
-            .flatten()
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|s| *s > 0.0)
-            .zip(price.parse::<f64>().ok())
-            .map(|(s, buy)| format!("\n估算卖出价：¥{:.2} 元/克", buy - s))
-            .unwrap_or_default();
-        (staleness, sell_line)
-    };
-    if let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&quote.fetched_at) {
-        let age = chrono::Utc::now().signed_duration_since(fetched.with_timezone(&chrono::Utc));
-        if age.num_seconds() > staleness {
-            title.push_str(" · 已过期");
-        }
+        title = Some(
+            last.as_ref()
+                .map(|q| format!("Au ¥{} ⚠", format_price(&q.customer_buy_price)))
+                .unwrap_or_else(|| "Au --.-- ⚠".to_string()),
+        );
+        tooltip = if last.is_some() {
+            "行情获取失败，显示的为最近一次有效报价".to_string()
+        } else {
+            "暂无有效行情，等待重试…".to_string()
+        };
     }
 
-    apply_title(Some(title));
-    let change_line = if change_text.is_empty() {
-        "持平".to_string()
-    } else {
-        change_text.trim_start().to_string()
-    };
-    let _ = tray.set_tooltip(Some(&format!(
-        "{} {}\n参考买入价：¥{} 元/克（较昨日{}）{}\n获取时间：{}",
-        quote.bank_name,
-        quote.product_name,
-        price,
-        change_line,
-        estimated_sell_line,
-        quote.fetched_at.get(11..19).unwrap_or(&quote.fetched_at)
-    )));
+    // ---- 主线程派发 UI 写操作 ----
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = app2.tray_by_id(TRAY_ID) {
+            let _ = if title_enabled {
+                tray.set_title(title.as_deref())
+            } else {
+                // 停用时必须显式设置空字符串：部分平台对 None 是 no-op 而非清除
+                tray.set_title(Some(""))
+            };
+            let _ = tray.set_tooltip(Some(&tooltip));
+        }
+    });
 }
 
 fn format_price(price: &str) -> String {

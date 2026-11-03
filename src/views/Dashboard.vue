@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { useQuoteStaleness } from "../api/quoteStaleness";
+import { useComponentListener } from "../api/componentEvents";
 import {
   NAlert,
   NButton,
@@ -39,11 +40,13 @@ async function reloadStabAlerts() {
   }
 }
 
+const registerListener = useComponentListener("stabilization-changed", () => {
+  void reloadStabAlerts();
+});
+
 onMounted(async () => {
   await Promise.all([quoteStore.init(), settingsStore.init(), reloadStabAlerts()]);
-  await listen("stabilization-changed", () => {
-    void reloadStabAlerts();
-  });
+  await registerListener();
 });
 
 const price = computed(() => {
@@ -61,13 +64,10 @@ const change = computed(() => {
 });
 
 /** 行情是否已过期（超过过期阈值视为过期） */
-const isStale = computed(() => {
-  if (!quoteStore.quote) return false;
-  const fetchedAt = new Date(quoteStore.quote.fetchedAt).getTime();
-  if (Number.isNaN(fetchedAt)) return true;
-  const ageSecs = (Date.now() - fetchedAt) / 1000;
-  return ageSecs > settingsStore.settings.stalenessThresholdSecs;
-});
+const isStale = useQuoteStaleness(
+  () => quoteStore.quote?.fetchedAt,
+  () => settingsStore.settings.stalenessThresholdSecs,
+);
 
 const fetchedAtText = computed(() => {
   if (!quoteStore.quote) return "--";
@@ -80,7 +80,7 @@ const fetchedAtText = computed(() => {
 const estimatedSell = computed(() => {
   const spread = Number(settingsStore.settings.estimatedSpread ?? NaN);
   const buy = Number(quoteStore.quote?.customerBuyPrice ?? NaN);
-  if (!Number.isFinite(spread) || spread <= 0 || !Number.isFinite(buy)) {
+  if (!Number.isFinite(spread) || spread < 0 || !Number.isFinite(buy)) {
     return null;
   }
   return (buy - spread).toFixed(2);

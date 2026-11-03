@@ -67,6 +67,8 @@ export interface StabilizationAssessment {
   narrowing: boolean;
   breakoutPrice: string | null;
   breakoutMet: boolean;
+  breakoutMatchingHours: number;
+  breakoutRequiredHours: number;
   dataSufficient: boolean;
 }
 

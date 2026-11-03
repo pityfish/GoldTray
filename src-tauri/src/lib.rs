@@ -18,7 +18,6 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 已有实例运行时：唤起主窗口
             tray::show_main_window(app);
@@ -71,7 +70,6 @@ pub fn run() {
             commands::delete_alert,
             commands::set_alert_enabled,
             commands::list_alert_history,
-            commands::delete_alert_history,
             commands::clear_alert_history,
             commands::get_settings,
             commands::set_setting,
@@ -85,6 +83,7 @@ pub fn run() {
             commands::set_stabilization_alert_enabled,
             commands::reset_stabilization_alert,
             commands::list_stabilization_events,
+            commands::clear_stabilization_events,
             commands::assess_stabilization,
         ])
         .run(tauri::generate_context!())

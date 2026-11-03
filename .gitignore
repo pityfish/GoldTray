@@ -1,6 +1,7 @@
 # ========== 前端 ==========
 node_modules/
 dist/
+test-results/
 
 # ========== Rust / Tauri ==========
 src-tauri/target/
@@ -27,3 +28,4 @@ build-src/
 # ========== 日志 ==========
 *.log
 logs/
+/.serena/

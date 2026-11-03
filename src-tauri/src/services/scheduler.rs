@@ -71,37 +71,48 @@ pub async fn fetch_and_process(app: &AppHandle) -> Result<GoldQuote, String> {
 
     // 预警评估（引擎内部含行情失效保护）；作用域块确保锁在 await 前释放
     let (engine_settings, notify_enabled) = read_engine_settings(&state);
-    {
+    let outcome = {
         let db = state.db.lock().unwrap();
-        match alert_engine::evaluate(&db, &quote, &engine_settings) {
-            Ok(outcome) => {
-                for (record, price, _estimated) in &outcome.triggered {
-                    if let Err(e) = db.insert_alert_history(record) {
-                        eprintln!("[goldtray] 保存触发记录失败：{e}");
-                    }
-                    if notify_enabled {
-                        let (title, body) = alert_engine::notification_body(record, price);
-                        if let Err(e) =
-                            app.notification().builder().title(title).body(body).show()
-                        {
+        alert_engine::evaluate(&db, &quote, &engine_settings)
+    };
+    match outcome {
+        Ok(outcome) => {
+            for (mut record, price, _) in outcome.triggered {
+                let status = if notify_enabled {
+                    let (title, body) = alert_engine::notification_body(&record, &price);
+                    match app.notification().builder().title(title).body(body).show() {
+                        Ok(()) => "SENT",
+                        Err(e) => {
                             eprintln!("[goldtray] 发送通知失败：{e}");
+                            "FAILED"
                         }
                     }
-                    let _ = app.emit(
-                        "alert-triggered",
-                        AlertTriggeredEvent {
-                            record: record.clone(),
-                            current_price: quote.customer_buy_price.clone(),
-                        },
-                    );
+                } else {
+                    "SKIPPED"
+                };
+                record.notification_status = status.to_string();
+                {
+                    let db = state.db.lock().unwrap();
+                    if let Err(e) = db.set_alert_notification_status(&record.id, status) {
+                        eprintln!("[goldtray] 保存通知状态失败：{e}");
+                    }
                 }
+                let _ = app.emit(
+                    "alert-triggered",
+                    AlertTriggeredEvent {
+                        record,
+                        current_price: quote.customer_buy_price.clone(),
+                    },
+                );
             }
-            Err(e) => eprintln!("[goldtray] 预警评估失败：{e}"),
         }
+        Err(e) => eprintln!("[goldtray] 预警评估失败：{e}"),
     }
 
     // 智能企稳引擎评估（历史数据缺失时引擎内部自行降级，不影响实时预警）
-    crate::services::stabilization_engine::evaluate_all(app).await;
+    if let Err(e) = crate::services::stabilization_engine::evaluate_all(app, notify_enabled).await {
+        eprintln!("[goldtray] 企稳评估失败：{e}");
+    }
 
     Ok(quote)
 }

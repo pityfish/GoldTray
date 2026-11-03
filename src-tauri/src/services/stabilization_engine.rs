@@ -75,10 +75,7 @@ const MIN_DAY_POINTS: usize = 6;
 
 /// 聚合有效交易日：排除未完成交易日（今天）、数据点过少、全天重复报价（休市）的日期。
 /// 返回按日期升序排列的有效交易日列表。
-pub fn aggregate_valid_days(
-    points: &[HistoricalPricePoint],
-    today: &str,
-) -> Vec<DayStat> {
+pub fn aggregate_valid_days(points: &[HistoricalPricePoint], today: &str) -> Vec<DayStat> {
     let mut groups: BTreeMap<String, Vec<&HistoricalPricePoint>> = BTreeMap::new();
     for p in points {
         if p.quality != "VALID" || p.timestamp.len() < 10 {
@@ -156,6 +153,54 @@ fn days_since(date_str: &str, now: &DateTime<Local>) -> Option<i64> {
     Some((now.date_naive() - d).num_days())
 }
 
+struct BreakoutCheck {
+    price: Option<f64>,
+    price_met: bool,
+    matching_hours: usize,
+    required_hours: usize,
+    data_sufficient: bool,
+}
+
+impl BreakoutCheck {
+    fn confirmed(&self) -> bool {
+        self.price_met && self.matching_hours == self.required_hours
+    }
+}
+
+fn check_breakout(
+    rule: &StabilizationRule,
+    latest: f64,
+    days: &[DayStat],
+    hours: &[HourBucket],
+) -> BreakoutCheck {
+    let required_days = rule.breakout_days.max(1) as usize;
+    let required_hours = rule.breakout_confirm_hours.max(1) as usize;
+    let price = (days.len() >= required_days)
+        .then(|| {
+            days.iter()
+                .rev()
+                .take(required_days)
+                .map(|day| day.day_max)
+                .fold(f64::NEG_INFINITY, f64::max)
+        })
+        .filter(|price| price.is_finite());
+    let matching_hours = price.map_or(0, |price| {
+        hours
+            .iter()
+            .rev()
+            .take(required_hours)
+            .take_while(|hour| hour.avg >= price)
+            .count()
+    });
+    BreakoutCheck {
+        price,
+        price_met: price.is_some_and(|price| latest >= price),
+        matching_hours,
+        required_hours,
+        data_sufficient: price.is_some() && hours.len() >= required_hours,
+    }
+}
+
 /// 对一条规则执行一次状态机评估。
 /// 仅在状态变更时生成事件；价格参考为实时客户买入参考价。
 pub fn evaluate(
@@ -177,9 +222,9 @@ pub fn evaluate(
     let prev = rule.state.clone();
     let now_s = now.to_rfc3339();
     let push_event = |out: &mut EvalOutcome,
-                          current: StabilizationState,
-                          reason: Option<String>,
-                          reference: Option<String>| {
+                      current: StabilizationState,
+                      reason: Option<String>,
+                      reference: Option<String>| {
         out.events.push(EventDraft {
             previous: Some(prev.clone()),
             current,
@@ -204,7 +249,12 @@ pub fn evaluate(
                 } else {
                     Some(format!("价格 {latest:.2} 达到观察价 {observation:.2}"))
                 };
-                push_event(&mut out, StabilizationState::Observing, reason, Some(format!("{latest:.2}")));
+                push_event(
+                    &mut out,
+                    StabilizationState::Observing,
+                    reason,
+                    Some(format!("{latest:.2}")),
+                );
             } else if prev != StabilizationState::WaitingForDip {
                 out.state = StabilizationState::WaitingForDip;
                 out.started_at = None;
@@ -246,7 +296,12 @@ pub fn evaluate(
                 .and_then(|s| s.get(..10).map(|s| s.to_string()));
             let after_start: Vec<&DayStat> = days
                 .iter()
-                .filter(|d| started_date.as_deref().map(|sd| d.date.as_str() > sd).unwrap_or(false))
+                .filter(|d| {
+                    started_date
+                        .as_deref()
+                        .map(|sd| d.date.as_str() > sd)
+                        .unwrap_or(false)
+                })
                 .collect();
 
             let stable_days = rule.stable_days.max(1) as usize;
@@ -323,25 +378,11 @@ pub fn evaluate(
                 }
             }
 
-            // 突破参考：最近 breakout_days 个有效交易日的高点
-            let breakout_days = rule.breakout_days.max(1) as usize;
-            let breakout = days
-                .iter()
-                .rev()
-                .take(breakout_days)
-                .map(|d| d.day_max)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if !breakout.is_finite() {
-                return EvalOutcome::keep(rule, Some(low));
-            }
-
-            if latest >= breakout {
-                // 反弹确认：最近 confirm_hours 个有效小时窗口全部保持在突破价上方
-                let confirm_hours = rule.breakout_confirm_hours.max(1) as usize;
-                let recent: Vec<&HourBucket> = hours.iter().rev().take(confirm_hours).collect();
-                let confirmed = recent.len() == confirm_hours
-                    && recent.iter().all(|b| b.avg >= breakout);
-                if confirmed {
+            let check = check_breakout(rule, latest, &days, &hours);
+            if let Some(breakout) = check.price {
+                if check.confirmed() {
+                    let breakout_days = rule.breakout_days;
+                    let confirm_hours = check.required_hours;
                     out.state = StabilizationState::Confirmed;
                     out.started_at = rule.observation_started_at.clone();
                     push_event(
@@ -400,7 +441,7 @@ pub fn assess(
     rule: &StabilizationRule,
     latest: f64,
     bars14d: &[HistoricalPricePoint],
-    _bars48h: &[HistoricalPricePoint],
+    bars48h: &[HistoricalPricePoint],
     now: &DateTime<Local>,
 ) -> StabilizationAssessment {
     let tolerance = rule.low_tolerance.trim().parse::<f64>().unwrap_or(0.0);
@@ -417,7 +458,12 @@ pub fn assess(
         .and_then(|s| s.get(..10).map(|s| s.to_string()));
     let after_start: Vec<&DayStat> = days
         .iter()
-        .filter(|d| started_date.as_deref().map(|sd| d.date.as_str() > sd).unwrap_or(false))
+        .filter(|d| {
+            started_date
+                .as_deref()
+                .map(|sd| d.date.as_str() > sd)
+                .unwrap_or(false)
+        })
         .collect();
     let stable_days = rule.stable_days.max(1) as usize;
     let low_stable = low.is_some()
@@ -427,16 +473,10 @@ pub fn assess(
             .rev()
             .take(stable_days)
             .all(|d| d.day_min >= low.unwrap() - tolerance);
-    let narrowing =
-        after_start.len() >= 2 && after_start[after_start.len() - 1].range < after_start[after_start.len() - 2].range;
-    let breakout = days
-        .iter()
-        .rev()
-        .take(rule.breakout_days.max(1) as usize)
-        .map(|d| d.day_max)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let breakout_finite = breakout.is_finite();
-    let breakout_met = breakout_finite && latest >= breakout;
+    let narrowing = after_start.len() >= 2
+        && after_start[after_start.len() - 1].range < after_start[after_start.len() - 2].range;
+    let hours = aggregate_valid_hours(bars48h);
+    let breakout = check_breakout(rule, latest, &days, &hours);
 
     StabilizationAssessment {
         state: rule.state.as_str().to_string(),
@@ -445,19 +485,82 @@ pub fn assess(
         valid_day_count: after_start.len(),
         low_stable,
         narrowing,
-        breakout_price: if breakout_finite {
-            Some(format!("{breakout:.2}"))
-        } else {
-            None
-        },
-        breakout_met,
-        data_sufficient: !days.is_empty(),
+        breakout_price: breakout.price.map(|price| format!("{price:.2}")),
+        breakout_met: breakout.price_met,
+        breakout_matching_hours: breakout.matching_hours,
+        breakout_required_hours: breakout.required_hours,
+        data_sufficient: breakout.data_sufficient,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breakout_requires_configured_days_and_matching_hour_windows() {
+        let mut rule = rule(StabilizationState::Stabilizing, "850", Some("840"), None);
+        rule.breakout_days = 3;
+        rule.breakout_confirm_hours = 2;
+        let days = vec![
+            DayStat {
+                date: "2026-10-30".into(),
+                day_min: 839.0,
+                day_max: 842.0,
+                range: 3.0,
+            },
+            DayStat {
+                date: "2026-10-31".into(),
+                day_min: 839.0,
+                day_max: 843.0,
+                range: 4.0,
+            },
+        ];
+        let hours = vec![HourBucket { avg: 845.0 }, HourBucket { avg: 846.0 }];
+        let insufficient = check_breakout(&rule, 847.0, &days, &hours);
+        assert!(!insufficient.data_sufficient);
+        assert_eq!(insufficient.price, None);
+
+        let mut enough_days = days;
+        enough_days.push(DayStat {
+            date: "2026-11-01".into(),
+            day_min: 840.0,
+            day_max: 844.0,
+            range: 4.0,
+        });
+        let one_hour = check_breakout(&rule, 847.0, &enough_days, &[HourBucket { avg: 845.0 }]);
+        assert!(one_hour.price_met);
+        assert_eq!(one_hour.matching_hours, 1);
+        assert!(!one_hour.confirmed());
+        let confirmed = check_breakout(&rule, 847.0, &enough_days, &hours);
+        assert!(confirmed.confirmed());
+    }
+
+    #[test]
+    fn cooldown_tracks_sent_notifications_instead_of_state_events() {
+        let db = crate::storage::db::Db::open_in_memory().unwrap();
+        let repo = StabilizationRepo(db.conn());
+        let rule = rule(StabilizationState::Stabilizing, "850", None, None);
+        repo.insert(&rule).unwrap();
+        let code = rule.state.as_str();
+        repo.insert_event(&StabilizationEvent {
+            id: "event-1".into(),
+            alert_id: rule.id.clone(),
+            alert_name: rule.name.clone(),
+            previous_state: None,
+            current_state: code.into(),
+            reference_price: None,
+            reason: None,
+            event_time: Local::now().to_rfc3339(),
+        })
+        .unwrap();
+
+        let last_sent = || repo.last_notification_at(&rule.id, code).unwrap();
+        assert!(notification_due(last_sent(), 10_000, 60));
+        repo.record_notification(&rule.id, code, 10_000).unwrap();
+        assert!(!notification_due(last_sent(), 13_599, 60));
+        assert!(notification_due(last_sent(), 13_600, 60));
+    }
 
     fn rule(
         state: StabilizationState,
@@ -490,10 +593,7 @@ mod tests {
 
     /// 生成小时粒度数据：每天 24 点，价格为 [min, max] 区间内平滑波动
     /// 生成截至昨天的小时数据（不含今天，避免被"未完成交易日"排除）
-    fn make_past_bars(
-        days: usize,
-        day_ranges: &[(f64, f64)],
-    ) -> Vec<HistoricalPricePoint> {
+    fn make_past_bars(days: usize, day_ranges: &[(f64, f64)]) -> Vec<HistoricalPricePoint> {
         let today = Local::now().date_naive();
         let mut pts = Vec::new();
         for d in 0..days {
@@ -542,9 +642,7 @@ mod tests {
             Some(&started),
         );
         // 最近 3 天：day_min 递减
-        let bars = make_past_bars(3,
-            &[(838.0, 839.0), (836.0, 837.5), (833.5, 836.0)],
-        );
+        let bars = make_past_bars(3, &[(838.0, 839.0), (836.0, 837.5), (833.5, 836.0)]);
         let out = evaluate(&r, 834.0, &bars, &[], &now());
         assert_eq!(out.state, StabilizationState::Observing);
         assert!(out.notify.is_empty());
@@ -563,9 +661,7 @@ mod tests {
             Some(&started),
         );
         // 日1：振幅 2；日2：振幅 1（收窄），最低点 832.2 >= 833-2=831
-        let bars = make_past_bars(2,
-            &[(832.2, 834.2), (832.5, 833.5)],
-        );
+        let bars = make_past_bars(2, &[(832.2, 834.2), (832.5, 833.5)]);
         let out = evaluate(&r, 833.10, &bars, &[], &now());
         assert_eq!(out.state, StabilizationState::Stabilizing);
         assert!(out.notify.contains(&NotifyKind::Stabilizing));
@@ -585,8 +681,15 @@ mod tests {
             Some(&started),
         );
         // 近 3 个完整有效日高点最多 834.5
-        let bars = make_past_bars(5,
-            &[(833.0, 834.0), (833.2, 834.2), (833.0, 834.5), (833.1, 834.3), (833.2, 834.4)],
+        let bars = make_past_bars(
+            5,
+            &[
+                (833.0, 834.0),
+                (833.2, 834.2),
+                (833.0, 834.5),
+                (833.1, 834.3),
+                (833.2, 834.4),
+            ],
         );
         // 48H 数据：最近两个小时桶均在突破价上方，每桶 2 个变化价格点（否则被判为休市）
         let today = Local::now().format("%Y-%m-%d").to_string();
@@ -619,7 +722,16 @@ mod tests {
             Some("833.00"),
             Some(&started),
         );
-        let bars = make_past_bars(5, &[(833.0, 834.0), (833.2, 834.2), (833.0, 834.5), (833.1, 834.3), (833.2, 834.4)]);
+        let bars = make_past_bars(
+            5,
+            &[
+                (833.0, 834.0),
+                (833.2, 834.2),
+                (833.0, 834.5),
+                (833.1, 834.3),
+                (833.2, 834.4),
+            ],
+        );
         // 只有一个达标小时桶
         let bars48 = vec![HistoricalPricePoint {
             timestamp: format!("{} 11:00", Local::now().format("%Y-%m-%d")),
@@ -648,10 +760,7 @@ mod tests {
         let out = evaluate(&r, 830.8, &[], &[], &now());
         assert_eq!(out.state, StabilizationState::Observing);
         assert_eq!(out.events.len(), 2); // Invalidated + Observing
-        assert_eq!(
-            out.events[0].current,
-            StabilizationState::Invalidated
-        );
+        assert_eq!(out.events[0].current, StabilizationState::Invalidated);
         assert_eq!(out.low, Some(830.8));
     }
 
@@ -715,13 +824,13 @@ use tauri_plugin_notification::NotificationExt;
 
 /// 对所有启用的企稳规则执行一次评估（在每次有效行情更新后调用）。
 /// 状态变更写入事件表；按冷却时间控制系统通知；广播给前端刷新。
-pub async fn evaluate_all(app: &AppHandle) {
+pub async fn evaluate_all(app: &AppHandle, notify_enabled: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     let Some(quote) = state.latest_quote.lock().unwrap().clone() else {
-        return;
+        return Ok(());
     };
     let Ok(latest) = quote.customer_buy_price.trim().parse::<f64>() else {
-        return;
+        return Ok(());
     };
 
     // 读取评估所需数据（短锁复制）
@@ -731,41 +840,43 @@ pub async fn evaluate_all(app: &AppHandle) {
             db.conn(),
             crate::models::historical_quote::HistoryPeriod::D14,
         )
-        .map(|(p, _, _)| p)
-        .unwrap_or_default();
+        .map_err(|e| format!("读取 14d 历史失败：{e}"))?
+        .0;
         let bars48 = crate::storage::history_repository::load_bars(
             db.conn(),
             crate::models::historical_quote::HistoryPeriod::H48,
         )
-        .map(|(p, _, _)| p)
-        .unwrap_or_default();
-        let rules = StabilizationRepo(db.conn()).list(true).unwrap_or_default();
+        .map_err(|e| format!("读取 48H 历史失败：{e}"))?
+        .0;
+        let rules = StabilizationRepo(db.conn())
+            .list(true)
+            .map_err(|e| format!("读取企稳规则失败：{e}"))?;
         (bars14, bars48, rules)
     };
 
     let now = Local::now();
-    let mut notifications: Vec<(String, String)> = Vec::new();
+    let mut notifications = Vec::new();
     let mut anything_changed = false;
 
     for rule in &rules {
         let outcome = evaluate(rule, latest, &bars14, &bars48, &now);
 
-        // 持久化状态与事件
-        let notify_kinds = outcome.notify.clone();
-        if !outcome.events.is_empty() {
-            anything_changed = true;
-        }
-        {
-            let db = state.db.lock().unwrap();
-            let repo = StabilizationRepo(db.conn());
-            if let Err(e) = repo.update_state(
+        let db = state.db.lock().unwrap();
+        let repo = StabilizationRepo(db.conn());
+        let persisted = (|| -> Result<bool, String> {
+            let tx = db
+                .conn()
+                .unchecked_transaction()
+                .map_err(|e| e.to_string())?;
+            if !repo.update_state(
                 &rule.id,
+                &rule.updated_at,
                 &outcome.state,
                 outcome.started_at.as_deref(),
                 outcome.low,
                 &now.to_rfc3339(),
-            ) {
-                eprintln!("[goldtray] 企稳状态保存失败：{e}");
+            )? {
+                return Ok(false);
             }
             for ev in &outcome.events {
                 let record = StabilizationEvent {
@@ -778,34 +889,45 @@ pub async fn evaluate_all(app: &AppHandle) {
                     reason: ev.reason.clone(),
                     event_time: now.to_rfc3339(),
                 };
-                if let Err(e) = repo.insert_event(&record) {
-                    eprintln!("[goldtray] 企稳事件保存失败：{e}");
-                }
+                repo.insert_event(&record)?;
             }
             // ONCE 模式：确认后自动停用
             if outcome.state == StabilizationState::Confirmed
                 && rule.trigger_mode == crate::models::AlertTriggerMode::Once
             {
-                let _ = repo.set_disabled_if_once(&rule.id);
+                repo.set_disabled_if_once(&rule.id)?;
             }
-            // 通知冷却检查：同一状态在冷却期内不重复通知
-            for kind in &notify_kinds {
-                let state_str = match kind {
-                    NotifyKind::Stabilizing => "STABILIZING",
-                    NotifyKind::Confirmed => "CONFIRMED",
-                };
-                let in_cooldown = repo
-                    .last_event_time_of_state(&rule.id, state_str)
-                    .ok()
-                    .flatten()
-                    .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
-                    .map(|t| {
-                        (now.with_timezone(&t.timezone()) - t).num_minutes()
-                            < rule.cooldown_minutes
-                    })
-                    .unwrap_or(false);
-                if !in_cooldown {
-                    notifications.push(build_notification(rule, *kind));
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(true)
+        })();
+        match persisted {
+            Ok(true) => anything_changed |= !outcome.events.is_empty(),
+            Ok(false) => continue,
+            Err(e) => {
+                eprintln!("[goldtray] 保存企稳评估失败：{e}");
+                continue;
+            }
+        }
+        {
+            if notify_enabled {
+                for kind in outcome.notify {
+                    let state_code = match kind {
+                        NotifyKind::Stabilizing => StabilizationState::Stabilizing.as_str(),
+                        NotifyKind::Confirmed => StabilizationState::Confirmed.as_str(),
+                    };
+                    match repo.last_notification_at(&rule.id, state_code) {
+                        Ok(last)
+                            if notification_due(last, now.timestamp(), rule.cooldown_minutes) =>
+                        {
+                            notifications.push((
+                                &rule.id,
+                                state_code,
+                                build_notification(rule, kind),
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[goldtray] 读取企稳通知时间失败：{e}"),
+                    }
                 }
             }
         }
@@ -815,11 +937,31 @@ pub async fn evaluate_all(app: &AppHandle) {
         let _ = app.emit("stabilization-changed", ());
     }
 
-    for (title, body) in notifications {
+    for (id, state_code, (title, body)) in notifications {
+        let reserved_at = Local::now().timestamp();
+        {
+            let db = state.db.lock().unwrap();
+            StabilizationRepo(db.conn())
+                .record_notification(id, state_code, reserved_at)
+                .map_err(|e| format!("预留企稳通知失败：{e}"))?;
+        }
         if let Err(e) = app.notification().builder().title(title).body(body).show() {
             eprintln!("[goldtray] 企稳通知发送失败：{e}");
+            let db = state.db.lock().unwrap();
+            if let Err(clear_error) =
+                StabilizationRepo(db.conn()).clear_notification(id, state_code, reserved_at)
+            {
+                eprintln!("[goldtray] 清除企稳通知预留失败：{clear_error}");
+            }
         }
     }
+    Ok(())
+}
+
+fn notification_due(last_sent: Option<i64>, now: i64, cooldown_minutes: i64) -> bool {
+    last_sent.map_or(true, |last| {
+        now.saturating_sub(last) >= cooldown_minutes.saturating_mul(60)
+    })
 }
 
 /// 生成企稳系统通知。仅提示参考信号，不含交易指令。

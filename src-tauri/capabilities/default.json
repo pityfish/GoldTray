@@ -8,8 +8,6 @@
     "core:window:allow-set-size",
     "core:window:allow-start-dragging",
     "notification:default",
-    "autostart:default",
-    "opener:default",
-    "opener:allow-open-url"
+    "autostart:default"
   ]
 }

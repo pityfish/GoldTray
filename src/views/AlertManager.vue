@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import {
+  NAlert,
   NButton,
   NCard,
   NDivider,
@@ -120,10 +121,6 @@ async function remove(id: string) {
   message.success("规则已删除，其触发记录已保留");
 }
 
-async function removeHistory(id: string) {
-  await alertStore.removeHistory(id);
-}
-
 async function clearAllHistory() {
   await alertStore.clearHistory();
   message.success("触发记录已清空");
@@ -159,9 +156,6 @@ function effectiveTarget(alert: PriceAlert): string {
   return Number.isFinite(t) ? t.toFixed(2) : alert.targetPrice;
 }
 
-const hasEstimatedSell = computed(
-  () => alertStore.alerts.some((a) => a.priceType === "CUSTOMER_SELL"),
-);
 </script>
 
 <template>
@@ -250,14 +244,11 @@ const hasEstimatedSell = computed(
         <n-timeline-item
           v-for="record in alertStore.history"
           :key="record.id"
-          :title="`${record.alertName}（${record.isEstimated ? '估算提醒' : '参考价'}）`"
           :content="`触发价 ¥${record.triggeredPrice} / 目标 ¥${record.targetPrice}`"
           :time="new Date(record.triggeredAt).toLocaleString('zh-CN', { hour12: false })"
         >
-          <template #header-extra>
-            <n-button size="tiny" quaternary type="error" @click="removeHistory(record.id)">
-              删除
-            </n-button>
+          <template #header>
+            {{ record.alertName }}（{{ record.isEstimated ? '估算提醒' : '参考价' }}）
           </template>
         </n-timeline-item>
       </n-timeline>

@@ -45,11 +45,7 @@ fn monitor_price(
 ) -> Option<Decimal> {
     match rule.price_type {
         AlertPriceType::CustomerBuy => quote.customer_buy_price.trim().parse::<Decimal>().ok(),
-        AlertPriceType::CustomerSell => {
-            let spread = settings.estimated_spread?;
-            let buy = quote.customer_buy_price.trim().parse::<Decimal>().ok()?;
-            Some(buy + spread)
-        }
+        AlertPriceType::CustomerSell => quote.estimated_sell_price(settings.estimated_spread?),
     }
 }
 
@@ -77,6 +73,10 @@ pub fn evaluate(
         return Ok(outcome);
     }
 
+    let tx = db
+        .conn()
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
     let rules = db.list_alerts()?;
     let now = Local::now().to_rfc3339();
 
@@ -152,7 +152,7 @@ pub fn evaluate(
             triggered_price: price_text.clone(),
             is_estimated,
             triggered_at: now.clone(),
-            notification_status: "SENT".to_string(),
+            notification_status: "PENDING".to_string(),
         };
 
         let disable = rule.trigger_mode == crate::models::AlertTriggerMode::Once;
@@ -165,9 +165,11 @@ pub fn evaluate(
             if disable { false } else { rule.enabled },
         )?;
 
+        db.insert_alert_history(&record)?;
         outcome.triggered.push((record, price_text, is_estimated));
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(outcome)
 }
 
@@ -399,13 +401,38 @@ mod tests {
         };
         db.insert_alert(&rule).unwrap();
 
-        // 买入价 921 + 价差 5 = 930 >= 925：满足
-        let out = evaluate(&db, &sample_quote("921.00", 0), &settings(Some("5.00"))).unwrap();
+        // 买入参考价 930 − 价差 5 = 估算卖出价 925。
+        let out = evaluate(&db, &sample_quote("930.00", 0), &settings(Some("5.00"))).unwrap();
         // 第一次仅计数
         assert!(out.triggered.is_empty());
 
-        let out = evaluate(&db, &sample_quote("921.00", 0), &settings(Some("5.00"))).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_history BEFORE INSERT ON alert_history
+                 BEGIN SELECT RAISE(ABORT, 'history write failed'); END;",
+            )
+            .unwrap();
+        assert!(evaluate(&db, &sample_quote("930.00", 0), &settings(Some("5.00"))).is_err());
+        let unchanged = db.get_alert(&rule.id).unwrap().unwrap();
+        assert!(unchanged.armed);
+        assert_eq!(unchanged.confirm_hits, 1);
+        assert!(db.list_alert_history(10).unwrap().is_empty());
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_history")
+            .unwrap();
+
+        let out = evaluate(&db, &sample_quote("930.00", 0), &settings(Some("5.00"))).unwrap();
         assert_eq!(out.triggered.len(), 1, "等效监控值应满足后触发");
+        assert_eq!(out.triggered[0].0.triggered_price, "925.00");
+        assert_eq!(
+            db.list_alert_history(10).unwrap()[0].notification_status,
+            "PENDING"
+        );
+        rule.direction = AlertDirection::Below;
+        assert_eq!(
+            super::is_currently_in_zone(&sample_quote("929.00", 0), &rule, &settings(Some("5.00")),),
+            Some(true),
+        );
         assert_eq!(out.triggered[0].2, true, "应标记为估算触发");
 
         // 未设置价差：无法监控，不触发

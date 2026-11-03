@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { useComponentListener } from "../api/componentEvents";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  NButton,
   NCard,
   NDivider,
   NForm,
@@ -20,7 +19,6 @@ import {
   enable,
   isEnabled,
 } from "@tauri-apps/plugin-autostart";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { DisplayOptions } from "../api/goldtray";
 import * as api from "../api/goldtray";
 import { useSettingsStore } from "../stores/settings";
@@ -100,50 +98,12 @@ async function onAutostartChange(v: boolean) {
   }
 }
 
-// ---------- 检查更新 ----------
-const REPO_URL = "https://github.com/pityfish/GoldTray";
 const currentVersion = ref("");
-const checking = ref(false);
 
-/** 语义化版本比较：返回 >0 表示 a 更新 */
-function cmpVersion(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
-async function checkUpdate() {
-  checking.value = true;
-  try {
-    const resp = await fetch(`${REPO_URL}/releases/latest`, {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!resp.ok) {
-      throw new Error(`GitHub 返回 ${resp.status}`);
-    }
-    const data = (await resp.json()) as { tag_name?: string };
-    const latest = String(data.tag_name ?? "").replace(/^v/, "");
-    if (!latest) {
-      throw new Error("响应中没有版本号");
-    }
-    if (cmpVersion(latest, currentVersion.value) > 0) {
-      message.info(`发现新版本 v${latest}，正在打开下载页面`);
-      await openUrl(`${REPO_URL}/releases/latest`);
-    } else {
-      message.success(`已是最新版本 v${currentVersion.value}`);
-    }
-  } catch {
-    message.warning(
-      "检查更新失败（可能是网络原因，或尚未发布过任何版本）。可手动访问 GitHub Releases 页面查看。",
-    );
-  } finally {
-    checking.value = false;
-  }
-}
+// 托盘菜单勾选变更时同步刷新（后端广播）
+const registerListener = useComponentListener("display-options-changed", () => {
+  void reloadDisplayOptions();
+});
 
 onMounted(async () => {
   await settingsStore.init();
@@ -157,10 +117,7 @@ onMounted(async () => {
   }
   await reloadDisplayOptions();
   await reloadHudOpacity();
-  // 托盘菜单勾选变更时同步刷新（后端广播）
-  await listen("display-options-changed", () => {
-    void reloadDisplayOptions();
-  });
+  await registerListener();
 });
 
 const intervalOptions = [
@@ -311,18 +268,12 @@ async function onSpreadBlur() {
     </n-card>
 
     <n-card size="small" title="关于" style="margin-top: 12px">
-      <div class="about-row">
-        <span>GoldTray v{{ currentVersion || "…" }}</span>
-        <n-button
-          size="tiny"
-          secondary
-          :loading="checking"
-          @click="checkUpdate"
-        >
-          检查更新
-        </n-button>
+      <div class="about-title">
+        <span class="about-name">GoldTray</span>
+        <span class="about-version">v{{ currentVersion || "…" }}</span>
       </div>
-      <div class="card-tip" style="margin-top: 8px">
+      <div class="about-developer">开发者 · Tyon Peng</div>
+      <div class="card-tip about-note">
         数据来源：汇率速递（第三方参考行情，非银行官方实时成交价）。
         本应用仅提供行情展示与提醒，不构成投资建议，不对盈利作出保证。
       </div>
@@ -341,10 +292,25 @@ async function onSpreadBlur() {
   color: #999;
   line-height: 1.6;
 }
-.about-row {
+.about-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+}
+.about-name {
   font-weight: 600;
+}
+.about-version,
+.about-developer {
+  color: #888;
+  font-size: 12px;
+}
+.about-developer {
+  margin-top: 4px;
+}
+.about-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(128, 128, 128, 0.16);
 }
 </style>

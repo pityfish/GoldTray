@@ -56,9 +56,9 @@ onMounted(() => {
           </n-tabs>
         </header>
         <main class="app-main">
-          <Dashboard v-if="tab === 'dashboard'" />
-          <AlertManager v-else-if="tab === 'alerts'" />
-          <SettingsView v-else />
+          <Dashboard v-show="tab === 'dashboard'" />
+          <AlertManager v-if="tab === 'alerts'" />
+          <SettingsView v-else-if="tab === 'settings'" />
         </main>
       </template>
     </n-message-provider>

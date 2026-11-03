@@ -4,6 +4,7 @@ use super::AlertTriggerMode;
 
 /// 企稳状态机状态
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StabilizationState {
     WaitingForDip,
     Observing,
@@ -115,6 +116,27 @@ pub struct StabilizationAssessment {
     /// 反弹突破参考价
     pub breakout_price: Option<String>,
     pub breakout_met: bool,
+    pub breakout_matching_hours: usize,
+    pub breakout_required_hours: usize,
     /// 数据是否足以支撑判断
     pub data_sufficient: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StabilizationState;
+
+    #[test]
+    fn stabilization_state_serializes_as_api_code() {
+        for state in [
+            StabilizationState::WaitingForDip,
+            StabilizationState::Observing,
+            StabilizationState::Stabilizing,
+            StabilizationState::Confirmed,
+            StabilizationState::Invalidated,
+            StabilizationState::InsufficientData,
+        ] {
+            assert_eq!(serde_json::to_value(&state).unwrap(), state.as_str());
+        }
+    }
 }

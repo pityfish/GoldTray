@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { useQuoteStaleness } from "../api/quoteStaleness";
+import { useComponentListener } from "../api/componentEvents";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuoteStore } from "../stores/quote";
 import { useSettingsStore } from "../stores/settings";
@@ -42,7 +43,14 @@ function applyScale() {
   el.style.fontSize = `${font.toFixed(1)}px`;
 }
 
-onMounted(() => {
+// 设置页调整透明度时实时生效
+const registerListener = useComponentListener("settings-changed", (event) => {
+  if (event.payload === "hud_opacity") {
+    void reloadOpacity();
+  }
+});
+
+onMounted(async () => {
   // 悬浮条窗口：背景需透明（窗口本身 transparent）
   document.documentElement.style.background = "transparent";
   document.body.style.background = "transparent";
@@ -54,12 +62,7 @@ onMounted(() => {
   if (rootEl.value) {
     resizeObserver.observe(rootEl.value);
   }
-  // 设置页调整透明度时实时生效
-  void listen("settings-changed", (event) => {
-    if (event.payload === "hud_opacity") {
-      void reloadOpacity();
-    }
-  });
+  await registerListener();
 });
 
 onBeforeUnmount(() => {
@@ -80,14 +83,10 @@ const changeText = computed(() => {
   return n > 0 ? `↑${n.toFixed(2)}` : `↓${Math.abs(n).toFixed(2)}`;
 });
 
-const isStale = computed(() => {
-  if (!quoteStore.quote) return false;
-  const fetchedAt = new Date(quoteStore.quote.fetchedAt).getTime();
-  if (Number.isNaN(fetchedAt)) return true;
-  return (
-    (Date.now() - fetchedAt) / 1000 > settingsStore.settings.stalenessThresholdSecs
-  );
-});
+const isStale = useQuoteStaleness(
+  () => quoteStore.quote?.fetchedAt,
+  () => settingsStore.settings.stalenessThresholdSecs,
+);
 
 const hasError = computed(() => !!quoteStore.error);
 </script>

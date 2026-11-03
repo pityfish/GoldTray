@@ -12,12 +12,17 @@ export const useSettingsStore = defineStore("settings", () => {
     estimatedSpread: null,
     stalenessThresholdSecs: 300,
   });
-  let initialized = false;
+  let initialization: Promise<void> | undefined;
 
-  async function init() {
-    if (initialized) return;
-    initialized = true;
+  async function load() {
     settings.value = await api.loadSettings();
+  }
+
+  function init() {
+    return (initialization ??= load().catch((error: unknown) => {
+      initialization = undefined;
+      throw error;
+    }));
   }
 
   async function save<K extends keyof AppSettings>(

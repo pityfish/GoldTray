@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { useComponentListener } from "../api/componentEvents";
 import {
   NButton,
   NCard,
@@ -52,12 +52,14 @@ function boolText(v: boolean): string {
   return v ? "满足" : "未满足";
 }
 
+// 后台评估产生状态变更时刷新
+const registerListener = useComponentListener("stabilization-changed", () => {
+  void reload();
+});
+
 onMounted(async () => {
   await reload();
-  // 后台评估产生状态变更时刷新
-  await listen("stabilization-changed", () => {
-    void reload();
-  });
+  await registerListener();
 });
 </script>
 
@@ -68,10 +70,10 @@ onMounted(async () => {
         <div class="stab-title">
           <n-tag
             size="small"
-            :type="STABILIZATION_STATE_META[alert.state].type"
+            :type="STABILIZATION_STATE_META[alert.state]?.type ?? 'default'"
             :bordered="false"
           >
-            {{ STABILIZATION_STATE_META[alert.state].text }}
+            {{ STABILIZATION_STATE_META[alert.state]?.text ?? "未知状态" }}
           </n-tag>
           <span class="stab-name">{{ alert.name }}</span>
         </div>
@@ -110,14 +112,17 @@ onMounted(async () => {
           <n-descriptions-item label="波动收窄">
             {{ boolText(assessment.narrowing) }}
           </n-descriptions-item>
-          <n-descriptions-item label="反弹突破">
+          <n-descriptions-item label="当前价突破">
             {{
               assessment.breakoutPrice
                 ? `${boolText(assessment.breakoutMet)}（参考 ¥${assessment.breakoutPrice}）`
                 : "--"
             }}
           </n-descriptions-item>
-          <n-descriptions-item label="数据充分性">
+          <n-descriptions-item label="连续达标窗口">
+            {{ assessment.breakoutMatchingHours }} / {{ assessment.breakoutRequiredHours }}
+          </n-descriptions-item>
+          <n-descriptions-item label="突破数据">
             {{ assessment.dataSufficient ? "充足" : "不足（暂停确认）" }}
           </n-descriptions-item>
           <n-descriptions-item label="当前状态">

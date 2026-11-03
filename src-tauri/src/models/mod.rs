@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 pub mod historical_quote;
@@ -29,6 +30,19 @@ pub struct GoldQuote {
     pub status: String,
     /// 第三方估算报价必须为 true
     pub is_estimated: bool,
+}
+
+impl GoldQuote {
+    pub fn estimated_sell_price(&self, spread: Decimal) -> Option<Decimal> {
+        if spread < Decimal::ZERO {
+            return None;
+        }
+        self.customer_buy_price
+            .trim()
+            .parse::<Decimal>()
+            .ok()?
+            .checked_sub(spread)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

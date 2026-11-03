@@ -29,7 +29,7 @@ jobs:
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 12.16.1
 
       - name: 安装 Node.js
         uses: actions/setup-node@v4
@@ -51,17 +51,24 @@ jobs:
       - name: 前端构建检查
         run: pnpm build
 
+      - name: Vue 类型检查
+        run: pnpm typecheck
+
       - name: Rust 单元测试
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: 仅构建安装包
+        if: github.event_name == 'workflow_dispatch'
+        run: pnpm tauri build
 
       - name: 构建并发布
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 版本号自动取自 src-tauri/tauri.conf.json 的 version 字段
-          tagName: v__VERSION__
-          releaseName: "GoldTray v__VERSION__"
+          tagName: ${{ github.ref_name }}
+          releaseName: GoldTray ${{ github.ref_name }}
           releaseBody: "请在下方 Assets 下载对应平台的安装包。行情数据为第三方参考价，不构成投资建议。"
           releaseDraft: false
           prerelease: false

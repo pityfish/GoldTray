@@ -39,12 +39,12 @@ let chart: echarts.ECharts | null = null;
 let resizeObserver: ResizeObserver | null = null;
 
 /** 容器可见（宽度大于 0）时才初始化图表，避免按 0 宽度初始化后无法自适应 */
-function ensureChart(): boolean {
-  if (!chartEl.value || chartEl.value.clientWidth === 0) return false;
+function ensureChart(): echarts.ECharts | null {
+  if (!chartEl.value || chartEl.value.clientWidth === 0) return null;
   if (!chart) {
     chart = echarts.init(chartEl.value);
   }
-  return true;
+  return chart;
 }
 
 /** 区间统计 */
@@ -60,20 +60,19 @@ async function load(p: HistoryPeriodValue) {
   error.value = null;
   try {
     payload.value = await api.getHistory(p);
-    render();
   } catch (e) {
     error.value = String(e);
     payload.value = null;
-    render();
   } finally {
     loading.value = false;
   }
 }
 
 function render() {
-  if (!ensureChart()) return;
+  const chart = ensureChart();
+  if (!chart) return;
   // 每次渲染前同步一次容器尺寸，覆盖从隐藏到可见 / 窗口宽度变化的情况
-  chart!.resize();
+  chart.resize();
   const dark = isDark.value;
   const axisColor = dark ? "#8887" : "#999";
   const splitColor = dark ? "#ffffff14" : "#0000000d";
@@ -157,6 +156,8 @@ function onResize() {
 }
 
 watch(period, (p) => void load(p));
+// 等 Vue 更新 v-show 后再读取容器尺寸并绘制。
+watch(payload, render, { flush: "post" });
 watch(isDark, () => render());
 watch(
   () => props.observationLines,
@@ -169,13 +170,7 @@ onMounted(() => {
   window.addEventListener("resize", onResize);
   // 容器尺寸变化（含从隐藏变为可见）时重绘/自适应
   resizeObserver = new ResizeObserver(() => {
-    if (chartEl.value && chartEl.value.clientWidth > 0) {
-      if (chart) {
-        chart.resize();
-      } else {
-        render();
-      }
-    }
+    render();
   });
   if (chartEl.value) {
     resizeObserver.observe(chartEl.value);

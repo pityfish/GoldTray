@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { useComponentListener } from "../api/componentEvents";
 import {
   NButton,
   NCard,
@@ -140,6 +140,16 @@ async function remove(id: string) {
   message.success("规则已删除");
 }
 
+async function clearEvents() {
+  try {
+    await api.clearStabilizationEvents();
+    events.value = await api.listStabilizationEvents(undefined, 50);
+    message.success("状态记录已清空");
+  } catch (e) {
+    message.error(`清空状态记录失败：${String(e)}`);
+  }
+}
+
 async function toggle(alert: StabilizationAlert, enabled: boolean) {
   await api.setStabilizationAlertEnabled(alert.id, enabled);
   await reload();
@@ -151,12 +161,14 @@ async function reset(alert: StabilizationAlert) {
   message.success("已重置为等待触达状态");
 }
 
+// 后台评估产生状态变更时刷新
+const registerListener = useComponentListener("stabilization-changed", () => {
+  void reload();
+});
+
 onMounted(async () => {
   await reload();
-  // 后台评估产生状态变更时刷新
-  await listen("stabilization-changed", () => {
-    void reload();
-  });
+  await registerListener();
 });
 </script>
 
@@ -184,10 +196,10 @@ onMounted(async () => {
           <div class="rule-title">
             <n-tag
               size="small"
-              :type="STABILIZATION_STATE_META[alert.state as StabilizationState].type"
+              :type="STABILIZATION_STATE_META[alert.state]?.type ?? 'default'"
               :bordered="false"
             >
-              {{ STABILIZATION_STATE_META[alert.state as StabilizationState].text }}
+              {{ STABILIZATION_STATE_META[alert.state]?.text ?? "未知状态" }}
             </n-tag>
             <span class="rule-name">{{ alert.name }}</span>
           </div>
@@ -225,16 +237,27 @@ onMounted(async () => {
     </n-card>
 
     <template v-if="events.length > 0">
-      <n-divider title-placement="left" style="margin-top: 20px">状态记录</n-divider>
+      <div class="history-header">
+        <n-divider title-placement="left" style="flex: 1; margin-bottom: 0">状态记录</n-divider>
+        <n-popconfirm @positive-click="clearEvents">
+          <template #trigger>
+            <n-button size="tiny" quaternary type="error">清空</n-button>
+          </template>
+          确认清空全部状态记录？（不影响企稳预警规则）
+        </n-popconfirm>
+      </div>
       <n-timeline style="margin-left: 8px">
         <n-timeline-item
           v-for="ev in events"
           :key="ev.id"
           :type="ev.currentState === 'CONFIRMED' ? 'success' : ev.currentState === 'INVALIDATED' ? 'error' : 'info'"
-          :title="`${ev.alertName} → ${STABILIZATION_STATE_META[ev.currentState as StabilizationState]?.text ?? ev.currentState}`"
           :content="ev.reason ?? ''"
           :time="new Date(ev.eventTime).toLocaleString('zh-CN', { hour12: false })"
-        />
+        >
+          <template #header>
+            {{ ev.alertName }} → {{ STABILIZATION_STATE_META[ev.currentState as StabilizationState]?.text ?? ev.currentState }}
+          </template>
+        </n-timeline-item>
       </n-timeline>
     </template>
 
@@ -308,6 +331,12 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+}
 .stab-manager {
   padding-top: 8px;
 }

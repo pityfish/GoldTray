@@ -8,7 +8,7 @@ export const useAlertStore = defineStore("alerts", () => {
   const alerts = ref<PriceAlert[]>([]);
   const history = ref<AlertTriggerRecord[]>([]);
   const loading = ref(false);
-  let initialized = false;
+  let initialization: Promise<void> | undefined;
 
   async function reloadAlerts() {
     alerts.value = await api.listAlerts();
@@ -18,15 +18,30 @@ export const useAlertStore = defineStore("alerts", () => {
     history.value = await api.listAlertHistory();
   }
 
-  async function init() {
-    if (initialized) return;
-    initialized = true;
-    await listen<AlertTriggeredEvent>("alert-triggered", () => {
+  async function load() {
+    const unlisten = await listen<AlertTriggeredEvent>("alert-triggered", () => {
       // 触发后同步刷新规则状态与触发记录
       void reloadAlerts();
       void reloadHistory();
     });
-    await Promise.all([reloadAlerts(), reloadHistory()]);
+    try {
+      const [rules, records] = await Promise.all([
+        api.listAlerts(),
+        api.listAlertHistory(),
+      ]);
+      alerts.value = rules;
+      history.value = records;
+    } catch (error) {
+      await Promise.allSettled([Promise.resolve().then(() => unlisten())]);
+      throw error;
+    }
+  }
+
+  function init() {
+    return (initialization ??= load().catch((error: unknown) => {
+      initialization = undefined;
+      throw error;
+    }));
   }
 
   async function create(input: Parameters<typeof api.createAlert>[0]) {
@@ -42,12 +57,6 @@ export const useAlertStore = defineStore("alerts", () => {
   async function remove(id: string) {
     await api.deleteAlert(id);
     await Promise.all([reloadAlerts(), reloadHistory()]);
-  }
-
-  /** 删除单条触发记录（不影响规则） */
-  async function removeHistory(id: string) {
-    await api.deleteAlertHistory(id);
-    await reloadHistory();
   }
 
   /** 清空全部触发记录（不影响规则） */
@@ -72,7 +81,6 @@ export const useAlertStore = defineStore("alerts", () => {
     update,
     remove,
     toggle,
-    removeHistory,
     clearHistory,
   };
 });
