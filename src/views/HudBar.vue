@@ -43,18 +43,20 @@ const hasError = computed(() => !!quoteStore.error);
   <div
     class="hud"
     data-tauri-drag-region
-    :class="{ stale: isStale || hasError }"
+    :class="{ degraded: isStale || hasError }"
   >
-    <span class="hud-au" data-tauri-drag-region>Au</span>
-    <span class="hud-price" data-tauri-drag-region>¥{{ price }}</span>
-    <span
-      v-if="changeText && !isStale && !hasError"
-      data-tauri-drag-region
-      class="hud-change"
-      :class="changeText.startsWith('↑') ? 'price-up' : 'price-down'"
-    >
-      {{ changeText }}
-    </span>
+    <div class="hud-badge">Au</div>
+    <div class="hud-price-wrap">
+      <span class="hud-cny">¥</span>
+      <span class="hud-price">{{ price }}</span>
+      <span
+        v-if="changeText && !isStale && !hasError"
+        class="hud-change"
+        :class="changeText.startsWith('↑') ? 'up' : 'down'"
+      >
+        {{ changeText }}
+      </span>
+    </div>
     <span v-if="isStale || hasError" class="hud-warn">⚠</span>
   </div>
 </template>
@@ -63,38 +65,70 @@ const hasError = computed(() => !!quoteStore.error);
 .hud {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
+  gap: 10px;
   width: 100vw;
   height: 100vh;
   box-sizing: border-box;
-  padding: 0 10px;
-  border-radius: 9px;
-  background: rgba(24, 26, 32, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font-size: 17px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  padding: 0 12px 0 10px;
+  border-radius: 13px;
+  background: linear-gradient(180deg, rgba(38, 41, 50, 0.95), rgba(24, 26, 32, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   cursor: move;
   user-select: none;
   white-space: nowrap;
 }
-.hud.stale {
-  border-color: rgba(240, 100, 100, 0.8);
+.hud.degraded {
+  border-color: rgba(245, 166, 35, 0.6);
 }
-.hud-au {
-  color: #f6c244;
+/* 装饰元素禁用指针事件：点击全部落到根元素，整条可拖动 */
+.hud-badge {
+  pointer-events: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f8d477, #e8a80c);
+  color: #5c3a00;
+  font-weight: 800;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  flex-shrink: 0;
 }
-.hud-price {
-  letter-spacing: 0.3px;
+.hud-price-wrap {
+  pointer-events: none;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
 }
-.hud-change {
+.hud-cny {
+  color: rgba(255, 255, 255, 0.55);
   font-size: 13px;
   font-weight: 600;
 }
+.hud-price {
+  color: #fff;
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+.hud-change {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.hud-change.up {
+  color: #ff6b6b;
+}
+.hud-change.down {
+  color: #4ade80;
+}
 .hud-warn {
-  font-size: 13px;
-  color: #f56c6c;
+  pointer-events: none;
+  margin-left: auto;
+  color: #f5a623;
+  font-size: 14px;
 }
 </style>
