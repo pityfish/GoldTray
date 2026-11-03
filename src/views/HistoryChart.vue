@@ -36,6 +36,16 @@ const payload = ref<HistoryPayload | null>(null);
 
 const chartEl = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
+let resizeObserver: ResizeObserver | null = null;
+
+/** 容器可见（宽度大于 0）时才初始化图表，避免按 0 宽度初始化后无法自适应 */
+function ensureChart(): boolean {
+  if (!chartEl.value || chartEl.value.clientWidth === 0) return false;
+  if (!chart) {
+    chart = echarts.init(chartEl.value);
+  }
+  return true;
+}
 
 /** 区间统计 */
 const stats = computed(() => payload.value?.stats ?? null);
@@ -61,15 +71,13 @@ async function load(p: HistoryPeriodValue) {
 }
 
 function render() {
-  if (!chartEl.value) return;
+  if (!ensureChart()) return;
+  // 每次渲染前同步一次容器尺寸，覆盖从隐藏到可见 / 窗口宽度变化的情况
+  chart!.resize();
   const dark = isDark.value;
   const axisColor = dark ? "#8887" : "#999";
   const splitColor = dark ? "#ffffff14" : "#0000000d";
   const labelColor = dark ? "#ccc" : "#666";
-
-  if (!chart) {
-    chart = echarts.init(chartEl.value);
-  }
 
   if (!payload.value || payload.value.points.length === 0) {
     chart.clear();
@@ -93,6 +101,7 @@ function render() {
       grid: { left: 8, right: 8, top: 14, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis",
+        confine: true,
         formatter: (params: unknown) => {
           const list = params as { dataIndex: number }[];
           const i = list?.[0]?.dataIndex ?? 0;
@@ -158,10 +167,25 @@ watch(
 onMounted(() => {
   void load(period.value);
   window.addEventListener("resize", onResize);
+  // 容器尺寸变化（含从隐藏变为可见）时重绘/自适应
+  resizeObserver = new ResizeObserver(() => {
+    if (chartEl.value && chartEl.value.clientWidth > 0) {
+      if (chart) {
+        chart.resize();
+      } else {
+        render();
+      }
+    }
+  });
+  if (chartEl.value) {
+    resizeObserver.observe(chartEl.value);
+  }
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
   chart?.dispose();
   chart = null;
 });
