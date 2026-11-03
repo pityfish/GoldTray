@@ -1,6 +1,6 @@
 # GoldTray
 
-轻量级跨平台黄金行情监控托盘工具。常驻系统菜单栏 / 任务栏，持续展示招商银行黄金账户·活期的第三方参考买入价，并提供多档价格预警提醒与手工预警管理。
+轻量级跨平台黄金行情监控托盘工具。常驻系统菜单栏 / 任务栏，持续展示招商银行黄金账户·活期的第三方参考买入价，并提供多档价格预警提醒、智能企稳信号与历史走势查看。
 
 > 平台支持：macOS（Apple Silicon）· Windows 10/11（Intel Mac 支持规划于后续版本）
 >
@@ -10,7 +10,7 @@
 
 ## 功能特性
 
-### 行情监控（阶段一）
+### 行情监控
 
 - **托盘常驻显示**：macOS 菜单栏直接显示金价文字（如 `Au ¥837.80 ↑0.57`）；Windows 托盘以图标 + 悬停提示展示
 - **定时自动刷新**：Rust 后台轮询，默认 60 秒，可配置 30 / 60 / 120 / 300 秒
@@ -19,12 +19,12 @@
 - **数据异常提示**：获取失败时保留最后一次有效报价并标记 `⚠`；行情超过过期阈值显示「已过期」
 - **关闭驻留**：点击关闭按钮仅隐藏窗口，托盘继续运行；禁止多开
 - **开机自启**：设置页可开启，系统登录后自动运行（macOS LaunchAgent / Windows 注册表）
-- **检查更新**：设置页「关于」中手动检查 GitHub Releases 新版本，有更新时自动打开下载页
 - **桌面悬浮行情条**：置顶半透明小条持续显示金价（`Au ¥837.50 ↑0.57`），可拖动、位置记忆，
-  托盘菜单勾选开关，解决 Windows 无法常驻显示价格文字的问题
+  可拖动边缘调整大小（等比缩放）、调节透明度，托盘菜单勾选开关，
+  解决 Windows 无法常驻显示价格文字的问题
 - **托盘交互**：左键点击打开主窗口；右键菜单（打开行情 / 预警管理 / 立即刷新 / 退出）
 
-### 价格预警（阶段二）
+### 价格预警
 
 - **多规则并存**：可创建任意多条独立预警规则，规则间互不干扰
 - **方向条件**：上涨达到（≥）/ 下跌达到（≤）目标价
@@ -38,7 +38,7 @@
 - **行情失效保护**：行情数据超过过期阈值（默认 5 分钟）时不触发新提醒
 - **卖出价差估算**：当前数据源仅提供客户买入参考价；客户卖出价预警可按「目标卖出价 + 价差」换算为等效买入价监控，通知中会提示到银行 App 核对实际价格
 
-### 历史走势与智能企稳（V1.2）
+### 历史走势与智能企稳
 
 - **历史走势图**：主页 ECharts 绿色面积图，支持 2天/14天/1月/3月/6月/12月 六档周期切换，
   悬停显示时段最低/最高/平均，附区间统计（最高、最低、平均、涨跌幅），深浅色主题自适应
@@ -61,12 +61,12 @@
 
 ### 方式一：下载安装包（推荐普通用户）
 
-前往 [GitHub Releases](https://github.com/your-org/GoldTray/releases) 页面，按系统下载对应安装包：
+前往 [GitHub Releases](https://github.com/pityfish/GoldTray/releases) 页面，按系统下载对应安装包：
 
 | 系统 | 文件 | 说明 |
 |---|---|---|
-| macOS（Apple Silicon） | `GoldTray_aarch64.dmg` | M1/M2/M3/M4 系列 |
-| Windows 10/11 | `GoldTray_x64_Setup.exe` | 64 位 |
+| macOS（Apple Silicon） | `GoldTray_<版本>_aarch64.dmg` | M1/M2/M3/M4 系列 |
+| Windows 10/11 | `GoldTray_<版本>_x64-setup.exe`（或 `.msi`） | 64 位 |
 
 **macOS 安装步骤：**
 
@@ -93,14 +93,14 @@
 ```bash
 # 1. 准备环境：安装 Node.js 20+、pnpm 9+、Rust 稳定版（详见「本地开发」）
 # 2. 克隆并构建
-git clone <本仓库地址> && cd GoldTray
+git clone https://github.com/pityfish/GoldTray.git && cd GoldTray
 pnpm install
 pnpm tauri build
 
 # 3. 构建产物位置
-# macOS：src-tauri/target/release/bundle/dmg/GoldTray_0.1.0_aarch64.dmg
+# macOS：src-tauri/target/release/bundle/dmg/GoldTray_<版本>_aarch64.dmg
 #        src-tauri/target/release/bundle/macos/GoldTray.app（可直接运行）
-# Windows：src-tauri/target/release/bundle/nsis/GoldTray_0.1.0_x64-setup.exe
+# Windows：src-tauri/target/release/bundle/nsis/GoldTray_<版本>_x64-setup.exe
 ```
 
 得到安装包后按「方式一」的对应系统步骤安装即可。
@@ -137,7 +137,7 @@ pnpm tauri build
 | 操作 | 效果 |
 |---|---|
 | 左键点击托盘图标 | 打开或聚焦主窗口 |
-| 右键点击托盘图标 | 弹出菜单：打开行情 / 预警管理 / 立即刷新 / 悬浮行情条 / 菜单栏价格文字 / 退出 |
+| 右键点击托盘图标 | 弹出菜单：打开行情 / 预警管理 / 立即刷新 / 悬浮行情条 / 菜单栏显示 / 退出 |
 | 勾选「悬浮行情条」 | 在桌面显示置顶悬浮行情小条，可拖动到任意位置，位置自动记忆；取消勾选隐藏 |
 | 勾选「菜单栏显示」 | 控制托盘图标旁是否显示价格文字（仅 macOS 生效），关闭后仅保留图标 |
 | 点击主窗口关闭按钮 `×` | 仅隐藏窗口，托盘继续运行、预警继续生效 |
@@ -179,7 +179,6 @@ pnpm tauri build
 | 想做什么 | 操作 |
 |---|---|
 | 开机自动运行 | 通用设置 → 开机自启 |
-| 检查新版本 | 关于 → 检查更新 |
 | 开关悬浮行情条 / 菜单栏显示 | 显示设置（与托盘菜单联动，状态持久化） |
 | 调整刷新频率 | 行情设置 → 刷新频率（30/60/120/300 秒）|
 | 关闭涨跌显示 | 行情设置 → 显示涨跌金额 |
@@ -204,25 +203,36 @@ pnpm tauri build
 GoldTray/
 ├── src/                          # Vue 3 前端
 │   ├── api/goldtray.ts           # Tauri IPC 调用封装
+│   │   ├── history.ts            # 历史行情 IPC 封装
+│   │   ├── componentEvents.ts    # 组件事件监听 composable（自动清理）
+│   │   └── quoteStaleness.ts     # 行情过期判断 composable
 │   ├── stores/                   # Pinia：quote / alerts / settings
 │   ├── views/
 │   │   ├── Dashboard.vue         # 行情主弹窗
+│   │   ├── HistoryChart.vue      # 历史走势图（ECharts）
+│   │   ├── HudBar.vue            # 桌面悬浮行情条
 │   │   ├── AlertManager.vue      # 预警管理
+│   │   ├── StabilizationManager.vue # 智能企稳规则管理
 │   │   └── SettingsView.vue      # 设置
-│   └── types/gold.ts             # 行情 / 预警类型定义
+│   └── types/                    # 行情 / 预警 / 企稳类型定义
 │
 ├── src-tauri/                    # Rust 核心
 │   └── src/
 │       ├── providers/huilvsudi.rs    # 汇率速递行情源
 │       ├── services/
 │       │   ├── quote_service.rs      # 行情缓存与请求闸门
+│       │   ├── history_service.rs    # 历史数据缓存与聚合
 │       │   ├── alert_engine.rs       # 预警引擎（触发状态机，含单元测试）
+│       │   ├── stabilization_engine.rs  # 企稳引擎（三级状态机，含单元测试）
 │       │   └── scheduler.rs          # 后台轮询调度
-│       ├── storage/db.rs             # SQLite 持久化
+│       ├── storage/
+│       │   ├── db.rs                 # SQLite 持久化与迁移
+│       │   └── stabilization_repository.rs # 企稳规则/事件仓储
 │       ├── tray/mod.rs               # 托盘（macOS 标题 / Windows tooltip）
 │       ├── commands/mod.rs           # IPC 命令
 │       └── lib.rs                    # 应用入口（托盘、生命周期、事件）
 │
+├── tests/                        # Playwright E2E 回归测试（浏览器内 mock Tauri IPC）
 └── docs                          # 设计文档见仓库根目录 MD 文件
 ```
 
@@ -232,8 +242,8 @@ GoldTray/
 
 | 依赖 | 版本要求 | 说明 |
 |---|---|---|
-| Node.js | ≥ 20 | 推荐 LTS |
-| pnpm | ≥ 9 | 包管理器 |
+| Node.js | ≥ 20 | 推荐 LTS（CI 使用 22） |
+| pnpm | ≥ 12 | 包管理器（CI 锁定 12.16.1） |
 | Rust | 稳定版 | 通过 [rustup](https://rustup.rs) 安装 |
 | Tauri 系统依赖 | — | macOS 需 Xcode Command Line Tools；Windows 需 WebView2（Win11 自带） |
 
@@ -245,10 +255,14 @@ pnpm install          # 安装前端依赖
 pnpm tauri dev        # 开发模式运行（自动启动 vite + rust 编译）
 pnpm tauri build      # 构建：macOS 产出 .dmg / .app，Windows 产出 .exe / .msi
 
+# 前端单独验证
+pnpm typecheck        # Vue 类型检查（vue-tsc）
+pnpm test:ui          # Playwright E2E 回归（浏览器内 mock Tauri IPC，首次需 pnpm exec playwright install chromium）
+
 # Rust 端单独验证
 cd src-tauri
 cargo check           # 编译检查
-cargo test            # 单元测试（价格预警 7 个 + 企稳引擎 8 个用例）
+cargo test            # 单元测试（预警 7 + 企稳 10 + 存储 4，共 21 个用例）
 ```
 
 > 图标源文件在 `build-src/icon.svg`，修改后执行 `pnpm tauri icon build-src/icon.svg` 重新生成全套图标。
@@ -259,11 +273,13 @@ Windows 安装包无法在 macOS 上交叉编译，双平台安装包通过 GitH
 
 ```bash
 # 发布新版本：打 tag 并推送即可
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
-构建流程：安装依赖 → 前端构建检查 → Rust 单元测试 → macOS（Apple Silicon）与 Windows（x64）并行打包 → 自动创建 GitHub Release 并上传 `GoldTray_aarch64.dmg`、`GoldTray_x64_Setup.exe`。
+构建流程：安装依赖 → 前端构建检查 + 类型检查 → Rust 单元测试（`--locked`）→ macOS（Apple Silicon）与 Windows（x64）并行打包 → 自动创建 GitHub Release 并上传 `GoldTray_<版本>_aarch64.dmg`、`GoldTray_<版本>_x64-setup.exe`、`GoldTray_<版本>_x64_en-US.msi`。
+
+此外 `.github/workflows/verify.yml` 在 Pull Request 上自动运行类型检查、Playwright E2E 回归（Linux）与 Rust 单元测试（macOS + Windows 矩阵）。
 
 也可在仓库 Actions 页面手动触发（Run workflow）验证构建流程，不上传产物。
 
@@ -280,7 +296,11 @@ git push origin v0.1.0
 | 表 | 用途 |
 |---|---|
 | `price_alerts` | 预警规则及触发状态（armed / confirm_hits / last_triggered） |
-| `alert_history` | 预警触发记录 |
+| `alert_history` | 预警触发记录（含通知发送状态） |
+| `gold_history_bars` | 历史行情数据缓存 |
+| `stabilization_alerts` | 智能企稳规则及状态 |
+| `stabilization_events` | 企稳状态变更留痕（时间线） |
+| `stabilization_notification_times` | 企稳通知冷却计时 |
 | `app_settings` | 键值配置（刷新间隔、通知开关、过期阈值、卖出价差估算等） |
 
 主要设置项：
@@ -299,12 +319,3 @@ git push origin v0.1.0
 - 该接口为非官方渠道，存在变更、限流或失效的可能；请勿将本应用作为唯一交易依据。
 - 本应用仅提供行情展示与提醒功能，不执行任何实际交易，不对盈利作出任何保证；投资决策请以银行 App 实际价格为准，风险自负。
 - 应用不收集、不上传任何个人身份数据；不要求也不会存储银行账号、密码、Cookie 或 Token。
-
-## Roadmap
-
-- [x] 阶段一：托盘行情 + 自动刷新（P0）
-- [x] 阶段二：多档价格预警 + 通知 + 持久化（P0）
-- [x] V1.2：历史走势图 + 智能企稳预警（历史可视化、三级企稳识别、信号失效保护）
-- [ ] 阶段三：持仓管理（交易记录 / 均价 / 盈亏估算）
-- [ ] 阶段四：体验提升（深色模式完善、数据导入导出、打包分发优化）
-- [ ] 阶段五：数据源扩展（多银行、多品种、数据源健康检测）
