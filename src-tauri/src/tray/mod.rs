@@ -38,14 +38,8 @@ pub fn create_tray(app: &AppHandle) -> Result<(), tauri::Error> {
     let refresh_item = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
     let hud_item =
         CheckMenuItem::with_id(app, "hud", "悬浮行情条", true, hud_enabled, None::<&str>)?;
-    let title_item = CheckMenuItem::with_id(
-        app,
-        "title",
-        "菜单栏价格文字",
-        true,
-        title_enabled,
-        None::<&str>,
-    )?;
+    let title_item =
+        CheckMenuItem::with_id(app, "title", "菜单栏显示", true, title_enabled, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(

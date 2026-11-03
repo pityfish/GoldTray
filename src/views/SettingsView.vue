@@ -199,7 +199,7 @@ async function onSpreadBlur() {
             @update:value="(v: boolean) => onDisplayChange('hud', v)"
           />
         </n-form-item>
-        <n-form-item label="菜单栏价格文字">
+        <n-form-item label="菜单栏显示">
           <n-switch
             :value="displayOptions.trayTitleEnabled"
             @update:value="(v: boolean) => onDisplayChange('trayTitle', v)"
@@ -208,7 +208,7 @@ async function onSpreadBlur() {
       </n-form>
       <div class="card-tip">
         悬浮行情条：桌面置顶小条持续显示金价，可拖动（Windows 上推荐开启）。
-        菜单栏价格文字：macOS 菜单栏图标旁显示「Au ¥价格」（仅 macOS 生效）。
+        菜单栏显示：macOS 菜单栏图标旁显示「Au ¥价格」（仅 macOS 生效）。
         两项均与托盘右键菜单的勾选状态联动。
       </div>
     </n-card>
