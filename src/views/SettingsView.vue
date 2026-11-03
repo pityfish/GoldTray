@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   NButton,
   NCard,
@@ -9,6 +10,7 @@ import {
   NFormItem,
   NInput,
   NSelect,
+  NSlider,
   NSwitch,
   useMessage,
 } from "naive-ui";
@@ -48,6 +50,37 @@ async function onDisplayChange(
   } catch (e) {
     message.error(`设置显示项失败：${String(e)}`);
   }
+}
+
+// ---------- 悬浮条透明度 ----------
+const hudOpacityPercent = ref<number>(95);
+let opacitySaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function reloadHudOpacity() {
+  try {
+    const pairs: Record<string, string | null> = await invoke("get_settings", {
+      keys: ["hud_opacity"],
+    });
+    const v = Number(pairs["hud_opacity"] ?? NaN);
+    hudOpacityPercent.value = Number.isFinite(v)
+      ? Math.round(Math.min(1, Math.max(0.3, v)) * 100)
+      : 95;
+  } catch {
+    hudOpacityPercent.value = 95;
+  }
+}
+
+/** 拖动中先更新本地值（受控组件，否则滑块回弹），停止 250ms 后再持久化广播 */
+function onHudOpacityChange(v: number) {
+  hudOpacityPercent.value = v;
+  if (opacitySaveTimer) {
+    clearTimeout(opacitySaveTimer);
+  }
+  opacitySaveTimer = setTimeout(() => {
+    void api
+      .saveSetting("hud_opacity", (v / 100).toFixed(2))
+      .catch((e) => message.error(`保存透明度失败：${String(e)}`));
+  }, 250);
 }
 
 // ---------- 开机自启 ----------
@@ -123,6 +156,7 @@ onMounted(async () => {
     autostartEnabled.value = false;
   }
   await reloadDisplayOptions();
+  await reloadHudOpacity();
   // 托盘菜单勾选变更时同步刷新（后端广播）
   await listen("display-options-changed", () => {
     void reloadDisplayOptions();
@@ -205,9 +239,19 @@ async function onSpreadBlur() {
             @update:value="(v: boolean) => onDisplayChange('trayTitle', v)"
           />
         </n-form-item>
+        <n-form-item label="悬浮条透明度">
+          <n-slider
+            :value="hudOpacityPercent"
+            :min="30"
+            :max="100"
+            :step="5"
+            :format-tooltip="(v: number) => `${v}%`"
+            @update:value="onHudOpacityChange"
+          />
+        </n-form-item>
       </n-form>
       <div class="card-tip">
-        悬浮行情条：桌面置顶小条持续显示金价，可拖动（Windows 上推荐开启）。
+        悬浮行情条：桌面置顶小条持续显示金价，可拖动、拖边缘调整大小（Windows 上推荐开启）。
         菜单栏显示：macOS 菜单栏图标旁显示「Au ¥价格」（仅 macOS 生效）。
         两项均与托盘右键菜单的勾选状态联动。
       </div>

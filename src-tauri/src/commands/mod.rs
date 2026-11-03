@@ -192,9 +192,11 @@ pub fn get_settings(
 }
 
 #[tauri::command]
-pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
-    // 新增/启用规则后立即按新设置重新校准阈值相关行为，这里只持久化
-    state.db.lock().unwrap().set_setting(&key, &value)
+pub fn set_setting(state: State<'_, AppState>, app: AppHandle, key: String, value: String) -> Result<(), String> {
+    state.db.lock().unwrap().set_setting(&key, &value)?;
+    // 广播设置变更（如悬浮条透明度需跨窗口实时生效）
+    let _ = app.emit("settings-changed", key);
+    Ok(())
 }
 
 fn validate_input(input: &AlertInput) -> Result<(), String> {
