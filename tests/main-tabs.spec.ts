@@ -10,7 +10,7 @@ const fixture = {
   get_settings: { refresh_interval_secs: "30", hud_opacity: "0.85" },
   get_display_options: { hudEnabled: true, trayTitleEnabled: false },
   "plugin:autostart|is_enabled": false,
-  "plugin:app|version": "1.3.1",
+  "plugin:app|version": "1.3.2",
   get_history: {
     period: "14d", fetchedAt, fromCache: true, stale: false,
     points: [1, 2, 3].map((day) => ({

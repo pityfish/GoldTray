@@ -302,8 +302,8 @@ Windows 安装包无法在 macOS 上交叉编译，双平台安装包通过 GitH
 
 ```bash
 # 发布新版本：打 tag 并推送即可
-git tag v1.3.1
-git push origin v1.3.1
+git tag v1.3.2
+git push origin v1.3.2
 ```
 
 构建流程：安装依赖 → 前端构建检查 + 类型检查 → Rust 单元测试（`--locked`）→ macOS（Apple Silicon）与 Windows（x64）并行打包 → 自动创建 GitHub Release 并上传 `GoldTray_<版本>_aarch64.dmg`、`GoldTray_<版本>_x64-setup.exe`、`GoldTray_<版本>_x64_en-US.msi`。

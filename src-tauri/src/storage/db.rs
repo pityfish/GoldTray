@@ -192,6 +192,7 @@ impl Db {
             self.0.execute("ALTER TABLE alert_history ADD COLUMN historical_from TEXT", [])
                 .map_err(|e| format!("升级预警记录失败：{e}"))?;
         }
+        self.migrate_stabilization_replay_start()?;
         self.0
             .execute(
                 "UPDATE alert_history SET notification_status='UNKNOWN'
@@ -200,6 +201,37 @@ impl Db {
             )
             .map_err(|e| format!("恢复未完成的通知记录失败：{e}"))?;
         Ok(())
+    }
+
+    fn migrate_stabilization_replay_start(&self) -> Result<(), String> {
+        const MIGRATION: &str = "migration_stabilization_replay_start";
+        if self.get_setting(MIGRATION)?.is_some() {
+            return Ok(());
+        }
+        let tx = self.0.unchecked_transaction().map_err(|e| e.to_string())?;
+        // 旧版轮询会覆盖 updated_at，首次补算不能信任这两个时间。
+        // 用保留下来的配置操作和状态事件作为边界，避免重放已处理的观察周期。
+        tx.execute_batch(
+            r#"
+            UPDATE stabilization_alerts AS rule
+            SET updated_at=COALESCE((
+                    SELECT event_time FROM stabilization_events
+                    WHERE alert_id=rule.id AND julianday(event_time)>=julianday(rule.created_at)
+                      AND (reason='用户手动重置' OR reason='用户修改规则配置，观察重新开始')
+                    ORDER BY julianday(event_time) DESC, event_time DESC LIMIT 1
+                ), rule.created_at),
+                last_evaluated_at=(
+                    SELECT event_time FROM stabilization_events
+                    WHERE alert_id=rule.id AND julianday(event_time)>=julianday(rule.created_at)
+                    ORDER BY julianday(event_time) DESC, event_time DESC LIMIT 1
+                )
+            WHERE rule.enabled=1 AND rule.state='WAITING_FOR_DIP'
+              AND rule.last_evaluated_at IS NOT NULL;
+            "#,
+        )
+        .map_err(|e| format!("升级企稳补记起点失败：{e}"))?;
+        self.set_setting(MIGRATION, "1")?;
+        tx.commit().map_err(|e| e.to_string())
     }
 
     // ---------- 预警规则 ----------
@@ -427,6 +459,71 @@ impl Db {
 #[cfg(test)]
 mod recovery_tests {
     use super::Db;
+
+    #[test]
+    fn upgrade_restores_replay_start_for_waiting_stabilization_rules_once() {
+        let db = Db::open_in_memory().unwrap();
+        db.conn()
+            .execute_batch(
+                r#"
+                DELETE FROM app_settings WHERE key='migration_stabilization_replay_start';
+                INSERT INTO stabilization_alerts
+                    (id,name,product_code,observation_price,enabled,state,created_at,updated_at,last_evaluated_at)
+                VALUES
+                    ('legacy','旧版规则','GOLD_DEMAND','835',1,'WAITING_FOR_DIP',
+                     '2026-11-03T10:26:00+08:00','2026-11-13T09:54:27.701056+08:00','2026-11-13T09:56:27.882833+08:00'),
+                    ('reset','手动重置过','GOLD_DEMAND','835',1,'WAITING_FOR_DIP',
+                     '2026-11-03T10:26:00+08:00','2026-11-13T09:54:27+08:00','2026-11-13T09:56:27+08:00'),
+                    ('disabled','已停用','GOLD_DEMAND','835',0,'WAITING_FOR_DIP',
+                     '2026-11-03T10:26:00+08:00','2026-11-13T09:54:27+08:00','2026-11-13T09:56:27+08:00'),
+                    ('observing','已在观察','GOLD_DEMAND','835',1,'OBSERVING',
+                     '2026-11-03T10:26:00+08:00','2026-11-13T09:54:27+08:00','2026-11-13T09:56:27+08:00'),
+                    ('unevaluated','刚重启用','GOLD_DEMAND','835',1,'WAITING_FOR_DIP',
+                     '2026-11-03T10:26:00+08:00','2026-11-13T09:54:27+08:00',NULL);
+                INSERT INTO stabilization_events (id,alert_id,alert_name,current_state,reason,event_time)
+                VALUES ('reset-event','reset','手动重置过','WAITING_FOR_DIP','用户手动重置','2026-11-13T09:30:00+08:00');
+                "#,
+            )
+            .unwrap();
+
+        db.migrate().unwrap();
+        let repo = crate::storage::stabilization_repository::StabilizationRepo(db.conn());
+        let legacy = repo.get("legacy").unwrap().unwrap();
+        assert_eq!(legacy.updated_at, legacy.created_at);
+        assert!(legacy.last_evaluated_at.is_none());
+        let reset = repo.get("reset").unwrap().unwrap();
+        assert_eq!(reset.updated_at, "2026-11-13T09:30:00+08:00");
+        assert_eq!(
+            reset.last_evaluated_at.as_deref(),
+            Some(reset.updated_at.as_str())
+        );
+        for id in ["disabled", "observing", "unevaluated"] {
+            assert_eq!(
+                repo.get(id).unwrap().unwrap().updated_at,
+                "2026-11-13T09:54:27+08:00"
+            );
+        }
+
+        assert!(repo
+            .update_state(
+                "legacy",
+                &legacy.updated_at,
+                &legacy.state,
+                None,
+                None,
+                "2026-11-13T10:00:00+08:00"
+            )
+            .unwrap());
+        db.migrate().unwrap();
+        assert_eq!(
+            repo.get("legacy")
+                .unwrap()
+                .unwrap()
+                .last_evaluated_at
+                .as_deref(),
+            Some("2026-11-13T10:00:00+08:00")
+        );
+    }
 
     #[test]
     fn pending_notification_is_marked_unknown_on_reopen() {
