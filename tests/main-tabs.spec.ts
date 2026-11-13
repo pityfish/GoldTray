@@ -10,7 +10,7 @@ const fixture = {
   get_settings: { refresh_interval_secs: "30", hud_opacity: "0.85" },
   get_display_options: { hudEnabled: true, trayTitleEnabled: false },
   "plugin:autostart|is_enabled": false,
-  "plugin:app|version": "1.3.0",
+  "plugin:app|version": "1.3.1",
   get_history: {
     period: "14d", fetchedAt, fromCache: true, stale: false,
     points: [1, 2, 3].map((day) => ({
@@ -28,6 +28,10 @@ const fixture = {
   list_alert_history: [{
     id: "trigger", alertId: "price", alertName: "价格夹具规则", direction: "ABOVE",
     targetPrice: "860.00", triggeredPrice: "861.00", triggeredAt: fetchedAt, isEstimated: false,
+  }, {
+    id: "offline", alertId: "price", alertName: "价格夹具规则", direction: "ABOVE",
+    targetPrice: "860.00", triggeredPrice: "862.00", isEstimated: false,
+    historicalFrom: "2026-11-12T09:00:00+08:00", triggeredAt: "2026-11-12T09:10:00+08:00",
   }],
   list_stabilization_alerts: [
     { id: "stabilization", name: "企稳夹具规则", state: "WAITING_FOR_DIP", observationPrice: "851.00" },
@@ -97,6 +101,8 @@ test("有数据时主标签可切换，行情图可在隐藏期间调整尺寸�
   await expect(chart).toBeHidden();
   await expect(page.getByText("价格夹具规则", { exact: true })).toBeVisible();
   await expect(page.getByText("触发价 ¥861.00 / 目标 ¥860.00")).toBeVisible();
+  await expect(page.getByText("价格夹具规则（离线补记 · 参考价）")).toBeVisible();
+  await expect(page.getByText("时段极值 ¥862.00 / 目标 ¥860.00")).toBeVisible();
   await expect(page.locator(".alert-manager .n-timeline").getByRole("button", { name: "删除" })).toHaveCount(0);
   await page.locator(".alert-manager .history-header").getByRole("button", { name: "清空" }).click();
   await page.getByRole("button", { name: "确认", exact: true }).click();

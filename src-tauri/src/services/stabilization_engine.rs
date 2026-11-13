@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{
+    DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike,
+};
 
+use super::recovery::{market_time, parse_time, ClosedBar};
 use crate::models::historical_quote::HistoricalPricePoint;
 use crate::models::stabilization::{
     StabilizationAssessment, StabilizationRule, StabilizationState,
@@ -19,8 +22,9 @@ pub struct DayStat {
 
 /// 单个有效小时窗口聚合结果
 #[derive(Debug, Clone)]
-pub struct HourBucket {
-    pub avg: f64,
+struct HourBucket {
+    start: NaiveDateTime,
+    avg: f64,
 }
 
 #[derive(Debug)]
@@ -29,6 +33,7 @@ pub struct EventDraft {
     pub current: StabilizationState,
     pub reference_price: Option<String>,
     pub reason: Option<String>,
+    pub event_time: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -121,36 +126,100 @@ pub fn aggregate_valid_days(points: &[HistoricalPricePoint], today: &str) -> Vec
     out
 }
 
-/// 聚合有效小时窗口（48H 数据为 10 分钟粒度，按小时分桶）。
-/// 桶内价格完全重复（休市/无更新）的窗口视为无效。
-pub fn aggregate_valid_hours(points_48h: &[HistoricalPricePoint]) -> Vec<HourBucket> {
-    let mut groups: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for p in points_48h {
-        if p.quality != "VALID" || p.timestamp.len() < 13 {
-            continue;
-        }
-        if let Some(avg) = p.avg_price {
-            groups
-                .entry(p.timestamp[..13].to_string())
-                .or_default()
-                .push(avg);
-        }
-    }
-    let mut out = Vec::new();
-    for (_hour, vals) in groups {
-        let distinct: HashSet<u64> = vals.iter().map(|v| v.to_bits()).collect();
-        if distinct.len() < 2 || vals.is_empty() {
-            continue;
-        }
-        let avg = vals.iter().sum::<f64>() / vals.len() as f64;
-        out.push(HourBucket { avg });
-    }
-    out
+fn market_hour(now: &DateTime<impl TimeZone>) -> NaiveDateTime {
+    let market_now = now.with_timezone(&market_time());
+    market_now
+        .date_naive()
+        .and_hms_opt(market_now.hour(), 0, 0)
+        .unwrap()
 }
 
-fn days_since(date_str: &str, now: &DateTime<Local>) -> Option<i64> {
+fn bar_time(point: &HistoricalPricePoint) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(&point.timestamp, "%Y-%m-%d %H:%M").ok()
+}
+
+/// 缓存在小时结束前取得的最后一个报价可能仍在变化。
+pub fn completed_hour_points(
+    points: &[HistoricalPricePoint],
+    fetched_at: &str,
+) -> Vec<HistoricalPricePoint> {
+    let Some(cutoff) = parse_time(fetched_at).map(|time| market_hour(&time)) else {
+        return Vec::new();
+    };
+    points
+        .iter()
+        .filter(|point| bar_time(point).is_some_and(|time| time < cutoff))
+        .cloned()
+        .collect()
+}
+
+/// 每个小时必须包含六个不同的 10 分钟数据点，且有价格变化。
+fn aggregate_valid_hours(
+    points_48h: &[HistoricalPricePoint],
+    cutoff: NaiveDateTime,
+) -> Vec<HourBucket> {
+    let mut groups: BTreeMap<NaiveDateTime, [Option<f64>; 6]> = BTreeMap::new();
+    for p in points_48h {
+        if p.quality != "VALID" {
+            continue;
+        }
+        let Some(time) = bar_time(p) else { continue };
+        if time >= cutoff || time.minute() % 10 != 0 {
+            continue;
+        }
+        let Some(avg) = p.avg_price.filter(|avg| avg.is_finite() && *avg > 0.0) else {
+            continue;
+        };
+        let start = time.date().and_hms_opt(time.hour(), 0, 0).unwrap();
+        groups.entry(start).or_default()[(time.minute() / 10) as usize] = Some(avg);
+    }
+    groups
+        .into_iter()
+        .filter_map(|(start, slots)| {
+            let first = slots[0]?;
+            if slots.iter().any(Option::is_none) || slots.iter().all(|price| *price == Some(first))
+            {
+                return None;
+            }
+            let avg = slots.into_iter().flatten().sum::<f64>() / slots.len() as f64;
+            Some(HourBucket { start, avg })
+        })
+        .collect()
+}
+
+fn days_since(date_str: &str, now: &DateTime<impl TimeZone>) -> Option<i64> {
     let d = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
     Some((now.date_naive() - d).num_days())
+}
+
+fn days_after_observation<'a>(rule: &StabilizationRule, days: &'a [DayStat]) -> &'a [DayStat] {
+    let Some(start) = rule.observation_started_at.as_deref().and_then(parse_time) else {
+        return &[];
+    };
+    let date = start.with_timezone(&market_time()).date_naive().to_string();
+    &days[days.partition_point(|day| day.date <= date)..]
+}
+
+/// 优先处理已经完成的交易日，再检查当前报价。低点变化超过容差时从新低当天重新观察。
+fn observation_reset(
+    prior_low: Option<f64>,
+    tolerance: f64,
+    latest: f64,
+    after_start: &[DayStat],
+    now: &DateTime<impl TimeZone>,
+) -> Option<(f64, String)> {
+    let mut baseline = prior_low?;
+    let mut reset = None;
+    for day in after_start {
+        if day.day_min < baseline - tolerance {
+            baseline = day.day_min;
+            reset = Some((baseline, format!("{}T00:00:00+08:00", day.date)));
+        }
+    }
+    if latest < baseline - tolerance {
+        return Some((latest, now.to_rfc3339()));
+    }
+    reset.map(|(low, started_at)| (low.min(latest), started_at))
 }
 
 struct BreakoutCheck {
@@ -172,6 +241,7 @@ fn check_breakout(
     latest: f64,
     days: &[DayStat],
     hours: &[HourBucket],
+    cutoff: NaiveDateTime,
 ) -> BreakoutCheck {
     let required_days = rule.breakout_days.max(1) as usize;
     let required_hours = rule.breakout_confirm_hours.max(1) as usize;
@@ -184,11 +254,16 @@ fn check_breakout(
                 .fold(f64::NEG_INFINITY, f64::max)
         })
         .filter(|price| price.is_finite());
+    let consecutive = hours
+        .iter()
+        .rev()
+        .take(required_hours)
+        .enumerate()
+        .take_while(|(index, hour)| hour.start == cutoff - Duration::hours(*index as i64 + 1))
+        .map(|(_, hour)| hour);
     let matching_hours = price.map_or(0, |price| {
-        hours
-            .iter()
-            .rev()
-            .take(required_hours)
+        consecutive
+            .clone()
             .take_while(|hour| hour.avg >= price)
             .count()
     });
@@ -197,7 +272,7 @@ fn check_breakout(
         price_met: price.is_some_and(|price| latest >= price),
         matching_hours,
         required_hours,
-        data_sufficient: price.is_some() && hours.len() >= required_hours,
+        data_sufficient: price.is_some() && consecutive.count() == required_hours,
     }
 }
 
@@ -208,7 +283,7 @@ pub fn evaluate(
     latest: f64,
     bars14d: &[HistoricalPricePoint],
     bars48h: &[HistoricalPricePoint],
-    now: &DateTime<Local>,
+    now: &DateTime<impl TimeZone>,
 ) -> EvalOutcome {
     let Ok(observation) = rule.observation_price.trim().parse::<f64>() else {
         return EvalOutcome::keep(rule, None);
@@ -216,9 +291,9 @@ pub fn evaluate(
     let Ok(tolerance) = rule.low_tolerance.trim().parse::<f64>() else {
         return EvalOutcome::keep(rule, None);
     };
-    let today = now.format("%Y-%m-%d").to_string();
+    let today = now.date_naive().to_string();
     let days = aggregate_valid_days(bars14d, &today);
-    let hours = aggregate_valid_hours(bars48h);
+    let cutoff = market_hour(now);
     let prev = rule.state.clone();
     let now_s = now.to_rfc3339();
     let push_event = |out: &mut EvalOutcome,
@@ -230,12 +305,20 @@ pub fn evaluate(
             current,
             reason,
             reference_price: reference,
+            event_time: now_s.clone(),
         });
     };
 
     let mut out = EvalOutcome::baseline(rule);
 
-    match rule.state {
+    let state = if rule.state == StabilizationState::InsufficientData
+        && rule.observation_started_at.is_some()
+    {
+        StabilizationState::Observing
+    } else {
+        rule.state.clone()
+    };
+    match state {
         // 等待触达 / 失效后重入 / 数据恢复
         StabilizationState::WaitingForDip
         | StabilizationState::Invalidated
@@ -272,7 +355,25 @@ pub fn evaluate(
 
         // 观察中：跟踪低点，评估初步企稳
         StabilizationState::Observing => {
-            let low = out.low.map(|v| v.min(latest)).unwrap_or(latest);
+            let prior_low = out.low;
+            let after_start = days_after_observation(rule, &days);
+            if let Some((low, started_at)) =
+                observation_reset(prior_low, tolerance, latest, after_start, now)
+            {
+                out.state = StabilizationState::Observing;
+                out.started_at = Some(started_at);
+                out.low = Some(low);
+                push_event(
+                    &mut out,
+                    StabilizationState::Observing,
+                    Some(format!(
+                        "价格明显创新低（{low:.2}），从新低重新累计有效交易日"
+                    )),
+                    Some(format!("{low:.2}")),
+                );
+                return out;
+            }
+            let low = prior_low.map(|v| v.min(latest)).unwrap_or(latest);
             out.low = Some(low);
 
             // 数据异常降级：历史数据长期缺失（最近有效日距今超过 3 天）
@@ -280,29 +381,16 @@ pub fn evaluate(
             if bars14d.is_empty() || matches!(last_day_age, Some(age) if age > 3) {
                 out.state = StabilizationState::InsufficientData;
                 out.started_at = rule.observation_started_at.clone();
-                push_event(
-                    &mut out,
-                    StabilizationState::InsufficientData,
-                    Some("历史行情数据缺失，无法确认有效交易日".to_string()),
-                    None,
-                );
+                if prev != StabilizationState::InsufficientData {
+                    push_event(
+                        &mut out,
+                        StabilizationState::InsufficientData,
+                        Some("历史行情数据缺失，无法确认有效交易日".to_string()),
+                        None,
+                    );
+                }
                 return out;
             }
-
-            // 观察开始之后出现的完整有效交易日
-            let started_date = rule
-                .observation_started_at
-                .as_deref()
-                .and_then(|s| s.get(..10).map(|s| s.to_string()));
-            let after_start: Vec<&DayStat> = days
-                .iter()
-                .filter(|d| {
-                    started_date
-                        .as_deref()
-                        .map(|sd| d.date.as_str() > sd)
-                        .unwrap_or(false)
-                })
-                .collect();
 
             let stable_days = rule.stable_days.max(1) as usize;
             // 条件A：最近 stable_days 个有效交易日未明显创新低
@@ -311,7 +399,7 @@ pub fn evaluate(
                     .iter()
                     .rev()
                     .take(stable_days)
-                    .all(|d| d.day_min >= low - tolerance);
+                    .all(|d| d.day_min >= prior_low.unwrap_or(low) - tolerance);
             // 条件B：下跌波动收窄（最近两个有效交易日振幅递减）
             let narrowing = after_start.len() >= 2 && {
                 let last = after_start[after_start.len() - 1].range;
@@ -342,6 +430,14 @@ pub fn evaluate(
                     &mut out,
                     StabilizationState::WaitingForDip,
                     Some("价格明显离开观察区，本轮观察结束".to_string()),
+                    None,
+                );
+            } else if prev == StabilizationState::InsufficientData {
+                out.state = StabilizationState::Observing;
+                push_event(
+                    &mut out,
+                    StabilizationState::Observing,
+                    Some("历史行情恢复，继续本轮观察".into()),
                     None,
                 );
             } else {
@@ -378,7 +474,8 @@ pub fn evaluate(
                 }
             }
 
-            let check = check_breakout(rule, latest, &days, &hours);
+            let hours = aggregate_valid_hours(bars48h, cutoff);
+            let check = check_breakout(rule, latest, &days, &hours, cutoff);
             if let Some(breakout) = check.price {
                 if check.confirmed() {
                     let breakout_days = rule.breakout_days;
@@ -436,37 +533,119 @@ pub fn evaluate(
     out
 }
 
+fn evaluate_with_recovery(
+    rule: &StabilizationRule,
+    latest: f64,
+    bars14: &[HistoricalPricePoint],
+    bars48: &[HistoricalPricePoint],
+    now: &DateTime<FixedOffset>,
+    recovery: Option<&[ClosedBar<'_>]>,
+) -> EvalOutcome {
+    let mut current = rule.clone();
+    let mut events = Vec::new();
+    let mut notify = Vec::new();
+    let since = [
+        rule.last_evaluated_at.as_deref().and_then(parse_time),
+        parse_time(&rule.updated_at),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    if let (Some(bars), Some(since)) = (recovery, since) {
+        for (i, bar) in bars
+            .iter()
+            .enumerate()
+            .filter(|(_, bar)| bar.includes_extreme(bar.min_at, since))
+        {
+            // 每个时段只使用当时可见的完整交易日及细粒度小时窗口。
+            let prior14: Vec<_> = bars14
+                .iter()
+                .filter(|p| {
+                    p.timestamp
+                        .get(..10)
+                        .is_some_and(|d| d < &bar.point.timestamp[..10])
+                })
+                .cloned()
+                .collect();
+            let prior48: Vec<_> = bars[..=i]
+                .iter()
+                .filter(|p| p.complete && (p.end - p.start).num_minutes() == 10)
+                .map(|p| p.point.clone())
+                .collect();
+            let mut step = evaluate(&current, bar.min, &prior14, &prior48, &bar.end);
+            // 回放窗口起点之前的数据可能已不在接口保留范围内，不能据此补记数据中断。
+            if step.state == StabilizationState::InsufficientData
+                && current.state == StabilizationState::Observing
+            {
+                step = EvalOutcome::keep(&current, step.low);
+            }
+            // 低点用于触达和失效判断。反弹使用均价，仍须满足有效小时条件。
+            if bar.complete
+                && step.events.is_empty()
+                && current.state == StabilizationState::Stabilizing
+            {
+                if let Some(avg) = bar.avg {
+                    let rebound = evaluate(&current, avg, &prior14, &prior48, &bar.end);
+                    if rebound.state == StabilizationState::Confirmed {
+                        step.state = rebound.state;
+                        step.events = rebound.events;
+                        step.notify = rebound.notify;
+                    }
+                }
+            }
+            current.state = step.state.clone();
+            current.observation_started_at = step.started_at.clone();
+            current.observation_low = step.low.map(|v| format!("{v:.2}"));
+            events.extend(step.events.drain(..).map(|mut event| {
+                event.reason = event.reason.map(|reason| format!("离线行情补记：{reason}"));
+                event
+            }));
+            for kind in step.notify.drain(..) {
+                if !notify.contains(&kind) {
+                    notify.push(kind);
+                }
+            }
+            if current.state == StabilizationState::Confirmed
+                && rule.trigger_mode == crate::models::AlertTriggerMode::Once
+            {
+                step.events = events;
+                step.notify = notify;
+                return step;
+            }
+        }
+    }
+    let mut outcome = evaluate(&current, latest, bars14, bars48, now);
+    events.append(&mut outcome.events);
+    for kind in outcome.notify {
+        if !notify.contains(&kind) {
+            notify.push(kind);
+        }
+    }
+    outcome.events = events;
+    outcome.notify = notify;
+    outcome
+}
+
 /// 生成前端展示的判断依据
 pub fn assess(
     rule: &StabilizationRule,
     latest: f64,
     bars14d: &[HistoricalPricePoint],
     bars48h: &[HistoricalPricePoint],
-    now: &DateTime<Local>,
+    now: &DateTime<impl TimeZone>,
 ) -> StabilizationAssessment {
     let tolerance = rule.low_tolerance.trim().parse::<f64>().unwrap_or(0.0);
     let low = rule
         .observation_low
         .as_deref()
         .and_then(|v| v.trim().parse::<f64>().ok());
-    let today = now.format("%Y-%m-%d").to_string();
+    let today = now.date_naive().to_string();
     let days = aggregate_valid_days(bars14d, &today);
 
-    let started_date = rule
-        .observation_started_at
-        .as_deref()
-        .and_then(|s| s.get(..10).map(|s| s.to_string()));
-    let after_start: Vec<&DayStat> = days
-        .iter()
-        .filter(|d| {
-            started_date
-                .as_deref()
-                .map(|sd| d.date.as_str() > sd)
-                .unwrap_or(false)
-        })
-        .collect();
+    let after_start = days_after_observation(rule, &days);
     let stable_days = rule.stable_days.max(1) as usize;
     let low_stable = low.is_some()
+        && observation_reset(low, tolerance, latest, after_start, now).is_none()
         && after_start.len() >= stable_days
         && after_start
             .iter()
@@ -475,8 +654,9 @@ pub fn assess(
             .all(|d| d.day_min >= low.unwrap() - tolerance);
     let narrowing = after_start.len() >= 2
         && after_start[after_start.len() - 1].range < after_start[after_start.len() - 2].range;
-    let hours = aggregate_valid_hours(bars48h);
-    let breakout = check_breakout(rule, latest, &days, &hours);
+    let cutoff = market_hour(now);
+    let hours = aggregate_valid_hours(bars48h, cutoff);
+    let breakout = check_breakout(rule, latest, &days, &hours, cutoff);
 
     StabilizationAssessment {
         state: rule.state.as_str().to_string(),
@@ -516,8 +696,21 @@ mod tests {
                 range: 4.0,
             },
         ];
-        let hours = vec![HourBucket { avg: 845.0 }, HourBucket { avg: 846.0 }];
-        let insufficient = check_breakout(&rule, 847.0, &days, &hours);
+        let cutoff = NaiveDate::from_ymd_opt(2026, 11, 2)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let hours = [
+            HourBucket {
+                start: cutoff - Duration::hours(2),
+                avg: 845.0,
+            },
+            HourBucket {
+                start: cutoff - Duration::hours(1),
+                avg: 846.0,
+            },
+        ];
+        let insufficient = check_breakout(&rule, 847.0, &days, &hours, cutoff);
         assert!(!insufficient.data_sufficient);
         assert_eq!(insufficient.price, None);
 
@@ -528,11 +721,11 @@ mod tests {
             day_max: 844.0,
             range: 4.0,
         });
-        let one_hour = check_breakout(&rule, 847.0, &enough_days, &[HourBucket { avg: 845.0 }]);
+        let one_hour = check_breakout(&rule, 847.0, &enough_days, &hours[1..], cutoff);
         assert!(one_hour.price_met);
         assert_eq!(one_hour.matching_hours, 1);
         assert!(!one_hour.confirmed());
-        let confirmed = check_breakout(&rule, 847.0, &enough_days, &hours);
+        let confirmed = check_breakout(&rule, 847.0, &enough_days, &hours, cutoff);
         assert!(confirmed.confirmed());
     }
 
@@ -594,7 +787,7 @@ mod tests {
     /// 生成小时粒度数据：每天 24 点，价格为 [min, max] 区间内平滑波动
     /// 生成截至昨天的小时数据（不含今天，避免被"未完成交易日"排除）
     fn make_past_bars(days: usize, day_ranges: &[(f64, f64)]) -> Vec<HistoricalPricePoint> {
-        let today = Local::now().date_naive();
+        let today = now().date_naive();
         let mut pts = Vec::new();
         for d in 0..days {
             let (lo, hi) = day_ranges[d % day_ranges.len()];
@@ -609,6 +802,8 @@ mod tests {
                     min_price: Some(price - 0.3),
                     max_price: Some(price + 0.3),
                     avg_price: Some(price),
+                    min_time: None,
+                    max_time: None,
                     quality: "VALID",
                 });
             }
@@ -616,8 +811,8 @@ mod tests {
         pts
     }
 
-    fn now() -> DateTime<Local> {
-        Local::now()
+    fn now() -> DateTime<FixedOffset> {
+        Local::now().with_timezone(&market_time())
     }
 
     #[test]
@@ -630,9 +825,57 @@ mod tests {
     }
 
     #[test]
+    fn recovery_can_reach_stabilizing_after_dip_and_rebound_while_closed() {
+        let market_now = market_time()
+            .with_ymd_and_hms(2026, 11, 13, 9, 0, 0)
+            .unwrap();
+        let mut rule = rule(StabilizationState::WaitingForDip, "835", None, None);
+        rule.updated_at = "2026-11-10T07:00:00+08:00".into();
+        rule.last_evaluated_at = Some("2026-11-10T08:00:00+08:00".into());
+        let mut bars14 = Vec::new();
+        for (day, low, high) in [(10, 832.0, 842.0), (11, 833.0, 840.0), (12, 834.0, 837.0)] {
+            for hour in 9..15 {
+                let avg = if hour == 9 { low + 0.5 } else { high - 0.5 };
+                bars14.push(HistoricalPricePoint {
+                    timestamp: format!("2026-11-{day} {hour:02}:00"),
+                    min_price: Some(if hour == 9 { low } else { avg - 0.25 }),
+                    max_price: Some(if hour == 9 { low + 1.0 } else { high }),
+                    avg_price: Some(avg),
+                    min_time: None,
+                    max_time: None,
+                    quality: "VALID",
+                });
+            }
+        }
+        let replay = super::super::recovery::closed_bars(&bars14, &[], market_now.to_utc());
+        let outcome =
+            evaluate_with_recovery(&rule, 840.0, &bars14, &[], &market_now, Some(&replay));
+        assert_eq!(outcome.state, StabilizationState::Stabilizing);
+        assert_eq!(
+            outcome.started_at.as_deref(),
+            Some("2026-11-10T10:00:00+08:00")
+        );
+        assert_eq!(outcome.low, Some(832.0));
+        assert_eq!(outcome.notify, vec![NotifyKind::Stabilizing]);
+        assert_eq!(outcome.events.len(), 2);
+        assert!(outcome.events[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .starts_with("离线行情补记："));
+
+        // 手动重置后的规则不回放重置前的低点。
+        rule.updated_at = market_now.to_rfc3339();
+        let outcome =
+            evaluate_with_recovery(&rule, 840.0, &bars14, &[], &market_now, Some(&replay));
+        assert_eq!(outcome.state, StabilizationState::WaitingForDip);
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
     fn no_stabilize_while_still_falling() {
-        // 观察后连续下跌：每日最低不断走低 → 不应企稳
-        let started = (Local::now().date_naive() - chrono::Duration::days(3))
+        let now = now();
+        let started = (now.date_naive() - Duration::days(3))
             .format("%Y-%m-%dT00:00:00+08:00")
             .to_string();
         let r = rule(
@@ -641,10 +884,27 @@ mod tests {
             Some("835.00"),
             Some(&started),
         );
-        // 最近 3 天：day_min 递减
-        let bars = make_past_bars(3, &[(838.0, 839.0), (836.0, 837.5), (833.5, 836.0)]);
-        let out = evaluate(&r, 834.0, &bars, &[], &now());
+        // 前两天振幅收窄，今日明显创新低。旧逻辑会立即判为企稳。
+        let bars = make_past_bars(2, &[(835.0, 840.0), (834.5, 837.0)]);
+        let out = evaluate(&r, 832.0, &bars, &[], &now);
         assert_eq!(out.state, StabilizationState::Observing);
+        assert_eq!(out.low, Some(832.0));
+        assert_eq!(out.started_at.as_deref(), Some(now.to_rfc3339().as_str()));
+        assert!(out.notify.is_empty());
+        assert!(!assess(&r, 832.0, &bars, &[], &now).low_stable);
+
+        let mut persisted = r.clone();
+        persisted.observation_started_at = out.started_at;
+        persisted.observation_low = Some("832".into());
+        let out = evaluate(&persisted, 832.1, &bars, &[], &now);
+        assert_eq!(out.state, StabilizationState::Observing);
+        assert!(out.events.is_empty());
+
+        // 当前报价已经回升时，昨天的明显新低仍会重置观察日期。
+        let bars = make_past_bars(2, &[(835.0, 840.0), (832.0, 835.0)]);
+        let out = evaluate(&r, 836.0, &bars, &[], &now);
+        let yesterday = now.date_naive() - Duration::days(1);
+        assert_eq!(out.started_at, Some(format!("{yesterday}T00:00:00+08:00")));
         assert!(out.notify.is_empty());
     }
 
@@ -691,21 +951,46 @@ mod tests {
                 (833.2, 834.4),
             ],
         );
-        // 48H 数据：最近两个小时桶均在突破价上方，每桶 2 个变化价格点（否则被判为休市）
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        let mut bars48 = Vec::new();
-        for (h, prices) in [(10, [835.1, 835.3]), (11, [835.5, 835.7])] {
-            for (m, price) in [(0, prices[0]), (10, prices[1])] {
-                bars48.push(HistoricalPricePoint {
-                    timestamp: format!("{today} {h:02}:{m:02}"),
-                    min_price: Some(price - 0.2),
-                    max_price: Some(price + 0.2),
-                    avg_price: Some(price),
-                    quality: "VALID",
-                });
-            }
+        let day = now().date_naive();
+        let at = |hour, minute| {
+            market_time()
+                .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+                .unwrap()
+        };
+        let bars48: Vec<_> = [9, 10, 11]
+            .into_iter()
+            .flat_map(|h| {
+                (0..6).map(move |i| {
+                    let price = 835.0 + 0.1 * f64::from(i);
+                    HistoricalPricePoint {
+                        timestamp: format!("{day} {h:02}:{:02}", 10 * i),
+                        min_price: Some(price - 0.2),
+                        max_price: Some(price + 0.2),
+                        avg_price: Some(price),
+                        min_time: None,
+                        max_time: None,
+                        quality: "VALID",
+                    }
+                })
+            })
+            .collect();
+        for points in [
+            [&bars48[..6], &bars48[12..]].concat(),   // 缺少 10 点整个小时
+            [&bars48[6..10], &bars48[11..]].concat(), // 10 点小时缺少一个数据点
+            bars48[..12].to_vec(),                    // 最近的 11 点小时没有数据
+        ] {
+            let out = evaluate(&r, 835.8, &bars, &points, &at(12, 0));
+            assert_eq!(out.state, StabilizationState::Stabilizing);
+            assert!(!assess(&r, 835.8, &bars, &points, &at(12, 0)).data_sufficient);
         }
-        let out = evaluate(&r, 835.8, &bars, &bars48, &now());
+        let partial = &bars48[6..];
+        let before_close = at(11, 55);
+        let out = evaluate(&r, 835.8, &bars, partial, &before_close);
+        assert_eq!(out.state, StabilizationState::Stabilizing);
+        let cached = completed_hour_points(partial, &before_close.to_rfc3339());
+        let out = evaluate(&r, 835.8, &bars, &cached, &at(12, 0));
+        assert_eq!(out.state, StabilizationState::Stabilizing);
+        let out = evaluate(&r, 835.8, &bars, partial, &at(12, 0));
         assert_eq!(out.state, StabilizationState::Confirmed);
         assert!(out.notify.contains(&NotifyKind::Confirmed));
     }
@@ -738,6 +1023,8 @@ mod tests {
             min_price: Some(835.0),
             max_price: Some(835.8),
             avg_price: Some(835.4),
+            min_time: None,
+            max_time: None,
             quality: "VALID",
         }];
         let out = evaluate(&r, 835.6, &bars, &bars48, &now());
@@ -773,6 +1060,8 @@ mod tests {
                 min_price: Some(836.0),
                 max_price: Some(836.0),
                 avg_price: Some(836.0),
+                min_time: None,
+                max_time: None,
                 quality: "VALID",
             },
             HistoricalPricePoint {
@@ -780,6 +1069,8 @@ mod tests {
                 min_price: Some(836.0),
                 max_price: Some(836.0),
                 avg_price: Some(836.0),
+                min_time: None,
+                max_time: None,
                 quality: "VALID",
             },
         ];
@@ -806,6 +1097,8 @@ mod tests {
             min_price: Some(833.0),
             max_price: Some(834.0),
             avg_price: Some(833.5),
+            min_time: None,
+            max_time: None,
             quality: "VALID",
         }];
         let out = evaluate(&r, 833.5, &bars, &[], &now());
@@ -824,42 +1117,37 @@ use tauri_plugin_notification::NotificationExt;
 
 /// 对所有启用的企稳规则执行一次评估（在每次有效行情更新后调用）。
 /// 状态变更写入事件表；按冷却时间控制系统通知；广播给前端刷新。
-pub async fn evaluate_all(app: &AppHandle, notify_enabled: bool) -> Result<(), String> {
+pub fn evaluate_all(
+    app: &AppHandle,
+    quote: &crate::models::GoldQuote,
+    bars14: &[HistoricalPricePoint],
+    bars48: &[HistoricalPricePoint],
+    recovery: Option<&[ClosedBar<'_>]>,
+    notify_enabled: bool,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let Some(quote) = state.latest_quote.lock().unwrap().clone() else {
-        return Ok(());
-    };
     let Ok(latest) = quote.customer_buy_price.trim().parse::<f64>() else {
         return Ok(());
     };
 
-    // 读取评估所需数据（短锁复制）
-    let (bars14, bars48, rules) = {
+    let rules = {
         let db = state.db.lock().unwrap();
-        let bars14 = crate::storage::history_repository::load_bars(
-            db.conn(),
-            crate::models::historical_quote::HistoryPeriod::D14,
-        )
-        .map_err(|e| format!("读取 14d 历史失败：{e}"))?
-        .0;
-        let bars48 = crate::storage::history_repository::load_bars(
-            db.conn(),
-            crate::models::historical_quote::HistoryPeriod::H48,
-        )
-        .map_err(|e| format!("读取 48H 历史失败：{e}"))?
-        .0;
-        let rules = StabilizationRepo(db.conn())
+        StabilizationRepo(db.conn())
             .list(true)
-            .map_err(|e| format!("读取企稳规则失败：{e}"))?;
-        (bars14, bars48, rules)
+            .map_err(|e| format!("读取企稳规则失败：{e}"))?
     };
 
-    let now = Local::now();
+    let now = parse_time(&quote.fetched_at)
+        .ok_or("行情时间格式异常")?
+        .with_timezone(&market_time());
     let mut notifications = Vec::new();
     let mut anything_changed = false;
 
-    for rule in &rules {
-        let outcome = evaluate(rule, latest, &bars14, &bars48, &now);
+    for rule in rules
+        .iter()
+        .filter(|r| r.product_code == quote.product_code)
+    {
+        let outcome = evaluate_with_recovery(rule, latest, bars14, bars48, &now, recovery);
 
         let db = state.db.lock().unwrap();
         let repo = StabilizationRepo(db.conn());
@@ -887,7 +1175,7 @@ pub async fn evaluate_all(app: &AppHandle, notify_enabled: bool) -> Result<(), S
                     current_state: ev.current.as_str().to_string(),
                     reference_price: ev.reference_price.clone(),
                     reason: ev.reason.clone(),
-                    event_time: now.to_rfc3339(),
+                    event_time: ev.event_time.clone(),
                 };
                 repo.insert_event(&record)?;
             }
@@ -922,7 +1210,16 @@ pub async fn evaluate_all(app: &AppHandle, notify_enabled: bool) -> Result<(), S
                             notifications.push((
                                 &rule.id,
                                 state_code,
-                                build_notification(rule, kind),
+                                build_notification(
+                                    rule,
+                                    kind,
+                                    outcome.events.iter().any(|event| {
+                                        event.current.as_str() == state_code
+                                            && event.reason.as_deref().is_some_and(|reason| {
+                                                reason.starts_with("离线行情补记：")
+                                            })
+                                    }),
+                                ),
                             ));
                         }
                         Ok(_) => {}
@@ -965,7 +1262,24 @@ fn notification_due(last_sent: Option<i64>, now: i64, cooldown_minutes: i64) -> 
 }
 
 /// 生成企稳系统通知。仅提示参考信号，不含交易指令。
-fn build_notification(rule: &StabilizationRule, kind: NotifyKind) -> (String, String) {
+fn build_notification(
+    rule: &StabilizationRule,
+    kind: NotifyKind,
+    historical: bool,
+) -> (String, String) {
+    if historical {
+        let stage = match kind {
+            NotifyKind::Stabilizing => "初步企稳",
+            NotifyKind::Confirmed => "反弹确认",
+        };
+        return (
+            format!("GoldTray · 离线{stage}补记"),
+            format!(
+                "「{}」在离线期间达到{stage}条件。请打开 GoldTray 查看最新状态和历史记录。",
+                rule.name
+            ),
+        );
+    }
     match kind {
         NotifyKind::Stabilizing => (
             "GoldTray · 初步企稳".to_string(),

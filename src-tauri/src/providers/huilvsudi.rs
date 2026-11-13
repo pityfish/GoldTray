@@ -236,6 +236,8 @@ pub async fn fetch_history(
             min_price: min,
             max_price: max,
             avg_price: avg,
+            min_time: min_s.and_then(|s| s.time.as_ref()?.get(i)).cloned(),
+            max_time: max_s.and_then(|s| s.time.as_ref()?.get(i)).cloned(),
             quality,
         });
     }

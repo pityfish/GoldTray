@@ -38,8 +38,6 @@ pub fn run() {
 
             // 启动后台行情轮询（首次请求在循环开始立即执行）
             services::scheduler::spawn(app.handle().clone());
-            // 历史行情后台刷新（走势图 + 企稳引擎数据源）
-            services::scheduler::spawn_history_refresher(app.handle().clone());
 
             Ok(())
         })

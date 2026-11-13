@@ -1,4 +1,4 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::{atomic::AtomicBool, Mutex, OnceLock};
 
 use tauri::menu::CheckMenuItem;
 use tauri::Wry;
@@ -16,6 +16,8 @@ pub struct AppState {
     pub provider: HuilvsudiCmbProvider,
     /// 行情请求互斥闸门：同一时刻只允许一个请求进行
     pub fetch_gate: tokio::sync::Mutex<()>,
+    pub alert_recovery_pending: AtomicBool,
+    pub stabilization_recovery_pending: AtomicBool,
     /// 托盘菜单「悬浮行情条」勾选项（供任意入口同步勾选状态）
     pub hud_check: OnceLock<CheckMenuItem<Wry>>,
     /// 托盘菜单「菜单栏价格文字」勾选项
@@ -30,6 +32,8 @@ impl AppState {
             last_error: Mutex::new(None),
             provider: HuilvsudiCmbProvider::new(),
             fetch_gate: tokio::sync::Mutex::new(()),
+            alert_recovery_pending: AtomicBool::new(false),
+            stabilization_recovery_pending: AtomicBool::new(false),
             hud_check: OnceLock::new(),
             title_check: OnceLock::new(),
         }

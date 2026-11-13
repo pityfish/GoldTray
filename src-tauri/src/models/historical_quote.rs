@@ -69,7 +69,6 @@ pub struct RawSeries {
     pub name: String,
     /// 实测可为 null，以 categories 为主时间轴（保留原始字段供排查）
     #[serde(default)]
-    #[allow(dead_code)]
     pub time: Option<Vec<String>>,
     #[serde(default)]
     pub data: Vec<Option<f64>>,
@@ -97,6 +96,10 @@ pub struct HistoricalPricePoint {
     pub min_price: Option<f64>,
     pub max_price: Option<f64>,
     pub avg_price: Option<f64>,
+    #[serde(skip)]
+    pub min_time: Option<String>,
+    #[serde(skip)]
+    pub max_time: Option<String>,
     /// VALID / CARRIED / MISSING / SUSPECT
     pub quality: &'static str,
 }

@@ -120,6 +120,8 @@ pub fn load_bars(
             min_price: str_to_price(min),
             max_price: str_to_price(max),
             avg_price: str_to_price(avg),
+            min_time: None,
+            max_time: None,
             quality: match quality.as_str() {
                 "MISSING" => "MISSING",
                 "CARRIED" => "CARRIED",

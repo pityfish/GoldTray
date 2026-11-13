@@ -19,12 +19,16 @@ export const useAlertStore = defineStore("alerts", () => {
   }
 
   async function load() {
-    const unlisten = await listen<AlertTriggeredEvent>("alert-triggered", () => {
-      // 触发后同步刷新规则状态与触发记录
-      void reloadAlerts();
-      void reloadHistory();
-    });
+    const unlisteners: Array<() => void> = [];
     try {
+      unlisteners.push(await listen<AlertTriggeredEvent>("alert-triggered", () => {
+        // 触发后同步刷新规则状态与触发记录
+        void reloadAlerts();
+        void reloadHistory();
+      }));
+      unlisteners.push(await listen("alert-state-changed", () => {
+        void reloadAlerts();
+      }));
       const [rules, records] = await Promise.all([
         api.listAlerts(),
         api.listAlertHistory(),
@@ -32,7 +36,7 @@ export const useAlertStore = defineStore("alerts", () => {
       alerts.value = rules;
       history.value = records;
     } catch (error) {
-      await Promise.allSettled([Promise.resolve().then(() => unlisten())]);
+      await Promise.allSettled(unlisteners.map((unlisten) => Promise.resolve().then(unlisten)));
       throw error;
     }
   }

@@ -445,20 +445,31 @@ pub async fn assess_stabilization(
     let db = state.db.lock().unwrap();
     let repo = StabilizationRepo(db.conn());
     let rule = repo.get(&id)?.ok_or_else(|| "规则不存在".to_string())?;
-    let latest = state
+    let quote = state
         .latest_quote
         .lock()
         .unwrap()
-        .as_ref()
-        .and_then(|q| q.customer_buy_price.trim().parse::<f64>().ok())
+        .clone()
         .ok_or_else(|| "暂无有效行情，无法评估".to_string())?;
+    let latest = quote
+        .customer_buy_price
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| "暂无有效行情，无法评估".to_string())?;
+    let evaluated_at = chrono::DateTime::parse_from_rfc3339(&quote.fetched_at)
+        .map_err(|_| "行情时间格式异常".to_string())?
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
     let (bars14, _, _) = history_repository::load_bars(db.conn(), HistoryPeriod::D14)?;
-    let (bars48, _, _) = history_repository::load_bars(db.conn(), HistoryPeriod::H48)?;
+    let (bars48, fetched_at, _) = history_repository::load_bars(db.conn(), HistoryPeriod::H48)?;
+    let completed_hours = crate::services::stabilization_engine::completed_hour_points(
+        &bars48,
+        fetched_at.as_deref().unwrap_or_default(),
+    );
     Ok(crate::services::stabilization_engine::assess(
         &rule,
         latest,
         &bars14,
-        &bars48,
-        &chrono::Local::now(),
+        &completed_hours,
+        &evaluated_at,
     ))
 }

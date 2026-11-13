@@ -141,6 +141,8 @@ pub struct AlertTriggerRecord {
     pub triggered_price: String,
     pub is_estimated: bool,
     pub triggered_at: String,
+    /// 时段极值回补时的时段起点；triggered_at 记录时段结束。
+    pub historical_from: Option<String>,
     pub notification_status: String,
 }
 

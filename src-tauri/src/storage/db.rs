@@ -111,6 +111,7 @@ impl Db {
                     triggered_price TEXT NOT NULL,
                     is_estimated INTEGER NOT NULL DEFAULT 0,
                     triggered_at TEXT NOT NULL,
+                    historical_from TEXT,
                     notification_status TEXT NOT NULL DEFAULT 'SENT'
                 );
 
@@ -182,6 +183,15 @@ impl Db {
                 "#,
             )
             .map_err(|e| format!("初始化数据库表失败：{e}"))?;
+        let has_historical_from: bool = self.0.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('alert_history') WHERE name='historical_from')",
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if !has_historical_from {
+            self.0.execute("ALTER TABLE alert_history ADD COLUMN historical_from TEXT", [])
+                .map_err(|e| format!("升级预警记录失败：{e}"))?;
+        }
         self.0
             .execute(
                 "UPDATE alert_history SET notification_status='UNKNOWN'
@@ -302,11 +312,12 @@ impl Db {
         last_triggered_price: Option<&str>,
         enabled: bool,
     ) -> Result<(), String> {
-        let now = Local::now().to_rfc3339();
         self.0
             .execute(
-                "UPDATE price_alerts SET armed=?2, confirm_hits=?3, last_triggered_at=?4, last_triggered_price=?5, enabled=?6, updated_at=?7 WHERE id=?1",
-                params![id, armed as i64, confirm_hits, last_triggered_at, last_triggered_price, enabled as i64, now],
+                "UPDATE price_alerts SET armed=?2, confirm_hits=?3, last_triggered_at=?4, last_triggered_price=?5, enabled=?6
+                 WHERE id=?1 AND (armed IS NOT ?2 OR confirm_hits IS NOT ?3 OR last_triggered_at IS NOT ?4
+                                  OR last_triggered_price IS NOT ?5 OR enabled IS NOT ?6)",
+                params![id, armed as i64, confirm_hits, last_triggered_at, last_triggered_price, enabled as i64],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -319,8 +330,8 @@ impl Db {
             .execute(
                 r#"INSERT INTO alert_history
                    (id, alert_id, alert_name, direction, target_price,
-                    triggered_price, is_estimated, triggered_at, notification_status)
-                   VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"#,
+                    triggered_price, is_estimated, triggered_at, historical_from, notification_status)
+                   VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"#,
                 params![
                     record.id,
                     record.alert_id,
@@ -330,6 +341,7 @@ impl Db {
                     record.triggered_price,
                     record.is_estimated as i64,
                     record.triggered_at,
+                    record.historical_from,
                     record.notification_status,
                 ],
             )
@@ -350,7 +362,7 @@ impl Db {
     pub fn list_alert_history(&self, limit: i64) -> Result<Vec<AlertTriggerRecord>, String> {
         let mut stmt = self
             .0
-            .prepare("SELECT * FROM alert_history ORDER BY triggered_at DESC LIMIT ?1")
+            .prepare("SELECT * FROM alert_history ORDER BY julianday(triggered_at) DESC, triggered_at DESC LIMIT ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![limit], |row| {
@@ -363,6 +375,7 @@ impl Db {
                     triggered_price: row.get("triggered_price")?,
                     is_estimated: row.get::<_, i64>("is_estimated")? != 0,
                     triggered_at: row.get("triggered_at")?,
+                    historical_from: row.get("historical_from")?,
                     notification_status: row.get("notification_status")?,
                 })
             })

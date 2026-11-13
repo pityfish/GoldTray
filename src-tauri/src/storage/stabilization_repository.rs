@@ -155,7 +155,7 @@ impl StabilizationRepo<'_> {
         self.0
             .execute(
                 "UPDATE stabilization_alerts SET enabled=?2, state=?3, observation_started_at=NULL,
-                 observation_low=NULL, updated_at=?4 WHERE id=?1",
+                 observation_low=NULL, last_evaluated_at=NULL, updated_at=?4 WHERE id=?1",
                 params![
                     id,
                     enabled as i64,
@@ -176,7 +176,8 @@ impl StabilizationRepo<'_> {
         self.0
             .execute(
                 "UPDATE stabilization_alerts SET state='WAITING_FOR_DIP',
-                 observation_started_at=NULL, observation_low=NULL, updated_at=?2 WHERE id=?1",
+                 observation_started_at=NULL, observation_low=NULL, last_evaluated_at=NULL,
+                 updated_at=?2 WHERE id=?1",
                 params![id, now],
             )
             .map_err(|e| e.to_string())?;
@@ -192,20 +193,18 @@ impl StabilizationRepo<'_> {
         low: Option<f64>,
         last_evaluated: &str,
     ) -> Result<bool, String> {
-        let now = Local::now().to_rfc3339();
         let updated = self
             .0
             .execute(
                 "UPDATE stabilization_alerts SET state=?2, observation_started_at=?3,
-                 observation_low=?4, last_evaluated_at=?5, updated_at=?6
-                 WHERE id=?1 AND enabled=1 AND updated_at=?7",
+                 observation_low=?4, last_evaluated_at=?5
+                 WHERE id=?1 AND enabled=1 AND updated_at=?6",
                 params![
                     id,
                     state.as_str(),
                     started_at,
                     low.map(|v| format!("{v:.2}")),
                     last_evaluated,
-                    now,
                     expected_updated_at,
                 ],
             )
@@ -267,7 +266,7 @@ impl StabilizationRepo<'_> {
                         reference_price, reason, event_time
                  FROM stabilization_events
                  WHERE (?1 IS NULL OR alert_id=?1)
-                 ORDER BY event_time DESC LIMIT ?2",
+                 ORDER BY julianday(event_time) DESC, event_time DESC LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt

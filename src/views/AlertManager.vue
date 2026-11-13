@@ -244,11 +244,13 @@ function effectiveTarget(alert: PriceAlert): string {
         <n-timeline-item
           v-for="record in alertStore.history"
           :key="record.id"
-          :content="`触发价 ¥${record.triggeredPrice} / 目标 ¥${record.targetPrice}`"
-          :time="new Date(record.triggeredAt).toLocaleString('zh-CN', { hour12: false })"
+          :content="`${record.historicalFrom ? '时段极值' : '触发价'} ¥${record.triggeredPrice} / 目标 ¥${record.targetPrice}`"
+          :time="record.historicalFrom
+            ? `${new Date(record.historicalFrom).toLocaleString('zh-CN', { hour12: false })} ～ ${new Date(record.triggeredAt).toLocaleTimeString('zh-CN', { hour12: false })}`
+            : new Date(record.triggeredAt).toLocaleString('zh-CN', { hour12: false })"
         >
           <template #header>
-            {{ record.alertName }}（{{ record.isEstimated ? '估算提醒' : '参考价' }}）
+            {{ record.alertName }}（{{ record.historicalFrom ? '离线补记 · ' : '' }}{{ record.isEstimated ? '估算提醒' : '参考价' }}）
           </template>
         </n-timeline-item>
       </n-timeline>

@@ -68,6 +68,7 @@ export interface AlertTriggerRecord {
   triggeredPrice: string;
   isEstimated: boolean;
   triggeredAt: string;
+  historicalFrom?: string | null;
   notificationStatus: string;
 }
 
